@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python samples for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`). Two independent samples: body tracking and depth sensing.
+Python application for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`). Functionality is split across `software/` modules: `software.py` is the entry point that dispatches to four independent mode modules (`_depth_record`, `_depth_analyze`, `_pose_record`, `_pose_analyze`), with shared code in `_common.py`.
 
 ## Environment Setup
 
@@ -17,61 +17,85 @@ Install dependencies:
 uv sync
 ```
 
-## Running the Samples
+## Running the Software
 
-**Body tracking** (3D skeleton + 2D overlay):
 ```bash
-cd body_tracking
-python body_tracking.py
-# or with options:
-python body_tracking.py --input_svo_file <file.svo> --ip_address <a.b.c.d:port> --resolution HD1080
+cd software
+uv run software.py
 ```
-Controls: `q` to quit, `m` to pause/resume.
+A 2x2 mode selection window appears first (Depth row / Pose row, each with Record and Analyze):
+- **Depth > Record**: recording settings dialog (resolution left, depth range right; HD2K and 0.5/1.5 m defaults) -> live RGB+depth view. Press `s` to start/stop recording, `q` to return to the mode menu, or close [x] to exit. Saves `recordings/depth_<timestamp>/video.mp4` (raw RGB) and `depth.npz`.
+- **Depth > Analyze**: folder picker (opens to `recordings/`) -> loads `video.mp4` + `depth.npz` -> matplotlib viewer. Click or drag a region to plot depth over time. Slider scrubs frames, `[>]` plays. `q` or close [x] controls navigation.
+- **Pose > Record**: pose settings dialog (resolution left, keypoint format BODY_18/34/38 right; HD2K and BODY_18 defaults) -> live side-by-side view (raw RGB left, skeleton overlay right). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pose_<timestamp>/video.mp4` (raw RGB) and `pose.npz`.
+- **Pose > Analyze**: folder picker (opens to `recordings/`) -> loads `pose.npz` + `video.mp4` -> matplotlib viewer. Select a keypoint from radio buttons to plot its X, Y, Z position in meters over time; axis colors match the on-screen coordinate gizmo (red=X, green=Y, blue=Z). Left panel shows video with skeleton overlay and coordinate axes gizmo. Slider scrubs frames, `[>]` plays. `q` returns to menu, [x] exits.
 
-**Depth capture** (live RGB + depth view, records to disk):
-```bash
-cd depth_sensing
-uv run capture.py
-# or with options:
-uv run capture.py --min-depth 0.5 --max-depth 3.0
-uv run capture.py --input_svo_file <file.svo> --ip_address <a.b.c.d:port>
+## Directory Structure
+
 ```
-A resolution picker UI appears at startup (1-4 to select, `q` to cancel).
-Controls: `s` to start/stop recording, `q` to quit without saving.
-Saves a timestamped folder containing `video.mp4` and `depth.npz`.
-Depth range defaults: 0.5 m (near) to 3.0 m (far).
-
-**Depth analysis** (post-capture time-series viewer):
-```bash
-cd depth_sensing
-uv run read.py <recording-folder>
+ZED/
+  software/
+    software.py         # entry point: mode dialog + dispatch (~50 lines)
+    _common.py          # shared imports, constants, and helper functions
+    _depth_record.py    # depth_record_mode(): live depth recording
+    _depth_analyze.py   # depth_analyze_mode(): depth analysis viewer
+    _pose_record.py     # pose_record_mode(): live pose/skeleton recording
+    _pose_analyze.py    # pose_analyze_mode(): pose trajectory analysis viewer
+    recordings/         # all recordings land here (created automatically)
+      depth_<timestamp>/
+        video.mp4
+        depth.npz
+      pose_<timestamp>/
+        video.mp4
+        pose.npz
+  .venv/
+  pyproject.toml
+  CLAUDE.md
 ```
-Left-click a pixel or drag a region on the frame panel to plot depth over time.
-Drag the slider to scrub through frames.
-
-**Input modes** (shared by both samples):
-- Default: live wired ZED camera
-- `--input_svo_file`: replay a recorded `.svo` / `.svo2` file
-- `--ip_address`: connect to a ZED streaming over the network (`a.b.c.d:port` or `a.b.c.d`)
 
 ## Architecture
 
-### Body tracking viewer pattern
-Body tracking combines two simultaneous views:
-- **OpenGL viewer** (`body_tracking/ogl_viewer/viewer.py`): 3D GLUT window, mouse-navigable camera, GLSL shaders.
-- **OpenCV viewer** (`body_tracking/cv_viewer/`): 2D skeleton overlay drawn on the left camera image via `cv2.imshow`.
+### Software pipeline
+`software.py` is a thin entry point (~50 lines) that shows the mode dialog and dispatches to four mode modules. All shared code (imports, constants, helpers, dialogs) lives in `_common.py`; each mode is self-contained in its own module. UI framework boundary:
+- **tkinter**: all pre-capture dialogs (mode selection, resolution picker, depth range, folder picker)
+- **OpenCV**: live capture window only (side-by-side RGB + depth or skeleton during recording)
+- **matplotlib**: analysis viewer only (frame panel, plot, frame slider)
 
-### Depth sensing pipeline
-`capture.py` records live depth data from the ZED camera:
+Recording output directory is always `software/recordings/`, defined as:
+```python
+RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
+```
+
+**Depth record mode** (`depth_record_mode` in `_depth_record.py`): records live depth data from the ZED camera:
 - `sl.DEPTH_MODE.NEURAL` with `depth_stabilization=True` for temporal smoothing.
 - `confidence_threshold=95` on `RuntimeParameters` (inverted scale: 0=strict, 100=permissive).
 - Depth frames stored as float32 in memory, saved to `depth.npz` (compressed NumPy archive with `frames`, `timestamps`, `min_depth`, `max_depth` keys).
 - Sentinel values from the SDK: `+inf` = TOO_FAR, `-inf` = TOO_CLOSE, `NaN` = occluded/no data. All are rendered black in the live colormap.
 
-`read.py` loads a recorded folder and provides an interactive matplotlib viewer:
+**Depth analyze mode** (`depth_analyze_mode` in `_depth_analyze.py`): loads a recorded folder and provides an interactive matplotlib viewer:
 - Depth overlay uses `jet_r` colormap (red=near, blue=far) with RGBA blending over the RGB video.
 - Non-finite values (`NaN`, `+/-inf`) are forced to opaque black after colormap application.
 - Single-pixel click or drag-to-select-region both plot depth vs. time on the right panel.
+
+**Pose record mode** (`pose_record_mode` in `_pose_record.py`): live body tracking with optional recording:
+- Requires positional tracking enabled before body tracking (ZED SDK requirement).
+- `sl.BODY_TRACKING_MODEL.HUMAN_BODY_ACCURATE` used for best multi-person quality.
+- `draw_skeleton_overlay` draws bones and joints directly on a BGR numpy frame; each tracked person gets a distinct color cycled from `BODY_COLORS` by `body.id % 10`.
+- `pose.npz` format: fixed-shape arrays padded with `NaN`/`-1` for absent persons per frame.
+  - `timestamps` (N,) float64 - seconds since recording start
+  - `n_persons` (N,) int32 - detected persons per frame
+  - `person_ids` (N, 10) int32 - tracking ID per slot; -1 = empty slot
+  - `keypoints_3d` (N, 10, K, 3) float32 - XYZ in meters; NaN = absent (K = 18/34/38)
+  - `keypoints_2d` (N, 10, K, 2) float32 - pixel coords at camera resolution; NaN = absent
+  - `body_confidence` (N, 10) float32 - 0-100 confidence; NaN = absent
+  - `body_format` scalar int32 - 18, 34, or 38
+  - `image_scale` (2,) float64 - [sx, sy] scale factor from camera resolution to display resolution
+- MAX_PERSONS=10 is an imposed array-sizing limit, not a ZED SDK model limit.
+
+**Pose analyze mode** (`pose_analyze_mode` in `_pose_analyze.py`): offline trajectory viewer for pose.npz recordings:
+- `keypoints_2d` is used only for the skeleton overlay on the video frame. All plot data comes from `keypoints_3d` (XYZ in meters).
+- Select a keypoint from radio buttons -> plots X (red), Y (green), Z (blue) position in meters over time, with colors matching the coordinate axes gizmo drawn on the video frame. Reveals lateral drift, vertical travel, or unexpected depth motion.
+- A red dashed vertical line tracks the current frame position on the chart as the slider is dragged.
+- Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
 
 ### ZED SDK patterns
 - `sl.Camera` is the central object; always opened with `InitParameters` and closed with `zed.close()`.

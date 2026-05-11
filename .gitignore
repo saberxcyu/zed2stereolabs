@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Video recodings
-depth_sensing/depth_*/
+software/recordings/
 
 # whl files
 *.whl
