@@ -11,6 +11,8 @@ wheels/
 
 # Video recodings
 software/recordings/
+software/tools/recordings
+
 
 # whl files
 *.whl

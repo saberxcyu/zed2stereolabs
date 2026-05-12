@@ -24,9 +24,9 @@ cd software
 uv run software.py
 ```
 A 2x2 mode selection window appears first (Depth row / Pose row, each with Record and Analyze):
-- **Depth > Record**: recording settings dialog (resolution left, depth range right; HD2K and 0.5/1.5 m defaults) -> live RGB+depth view. Press `s` to start/stop recording, `q` to return to the mode menu, or close [x] to exit. Saves `recordings/depth_<timestamp>/video.mp4` (raw RGB) and `depth.npz`.
+- **Depth > Record**: recording settings dialog (resolution left, depth range right; HD2K and 0.5/1.5 m defaults) -> live RGB+depth view. Press `s` to start/stop recording, `q` to return to the mode menu, or close [x] to exit. Saves `recordings/depth_<timestamp>/video.mp4` (left sensor rectified frames only) and `depth.npz`.
 - **Depth > Analyze**: folder picker (opens to `recordings/`) -> loads `video.mp4` + `depth.npz` -> matplotlib viewer. Click or drag a region to plot depth over time. Slider scrubs frames, `[>]` plays. `q` or close [x] controls navigation.
-- **Pose > Record**: pose settings dialog (resolution left, keypoint format BODY_18/34/38 right; HD2K and BODY_18 defaults) -> live side-by-side view (raw RGB left, skeleton overlay right). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pose_<timestamp>/video.mp4` (raw RGB) and `pose.npz`.
+- **Pose > Record**: pose settings dialog (resolution left, keypoint format BODY_18/34/38 right; HD2K and BODY_18 defaults) -> live side-by-side view (raw RGB left, skeleton overlay right). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pose_<timestamp>/video.mp4` (left sensor rectified frames only) and `pose.npz`.
 - **Pose > Analyze**: folder picker (opens to `recordings/`) -> loads `pose.npz` + `video.mp4` -> matplotlib viewer. Select a keypoint from radio buttons to plot its X, Y, Z position in meters over time; axis colors match the on-screen coordinate gizmo (red=X, green=Y, blue=Z). Left panel shows video with skeleton overlay and coordinate axes gizmo. Slider scrubs frames, `[>]` plays. `q` returns to menu, [x] exits.
 
 ## Directory Structure
@@ -47,6 +47,12 @@ ZED/
       pose_<timestamp>/
         video.mp4
         pose.npz
+    tools/
+      video.py          # standalone stereo recorder: both left + right rectified frames
+      recordings/       # stereo recordings land here
+        stereo_<timestamp>/
+          left.mp4
+          right.mp4
   .venv/
   pyproject.toml
   CLAUDE.md
@@ -96,6 +102,9 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 - Select a keypoint from radio buttons -> plots X (red), Y (green), Z (blue) position in meters over time, with colors matching the coordinate axes gizmo drawn on the video frame. Reveals lateral drift, vertical travel, or unexpected depth motion.
 - A red dashed vertical line tracks the current frame position on the chart as the slider is dragged.
 - Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
+
+### Video output convention
+All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out. If both left and right rectified frames are needed (e.g. for stereo reconstruction or disparity algorithms), use `tools/video.py` instead, which saves `left.mp4` and `right.mp4` separately.
 
 ### ZED SDK patterns
 - `sl.Camera` is the central object; always opened with `InitParameters` and closed with `zed.close()`.
