@@ -70,8 +70,8 @@ def pick_video_file():
     root.withdraw()
     recordings_dir = os.path.join(SCRIPT_DIR, 'recordings')
     path = filedialog.askopenfilename(
-        title="Select raw composite video (raw_composite.mp4)",
-        filetypes=[("MP4 files", "*.mp4"), ("All files", "*.*")],
+        title="Select raw composite video",
+        filetypes=[("Video files", "*.mp4 *.mkv"), ("All files", "*.*")],
         initialdir=recordings_dir if os.path.isdir(recordings_dir) else SCRIPT_DIR
     )
     root.destroy()
@@ -214,9 +214,10 @@ def main():
         print("        Copy your SN*.conf file there and retry.")
         return
 
-    # Step 4: derive output directory next to the video file
-    session_dir = os.path.dirname(video_path)
-    output_dir  = os.path.join(session_dir, f"extracted_{calib_suffix}")
+    # Step 4: derive output directory from the video filename stem
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    output_dir = os.path.join(os.path.dirname(video_path),
+                              f"{video_stem}_extracted_{calib_suffix}")
 
     process_video(video_path, conf_path, calib_suffix, eye_w, eye_h, output_dir)
 

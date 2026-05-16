@@ -27,7 +27,6 @@ class ThreadedCameraUVC:
     def __init__(self, composite_width, height, fps):
         self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  composite_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, float(fps))
@@ -40,6 +39,8 @@ class ThreadedCameraUVC:
                 f"Resolution mismatch: requested {composite_width}x{height}, "
                 f"got {actual_w}x{actual_h}. Is the ZED on a USB 3.0 (blue) port?"
             )
+
+        self.actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
 
         # 8 frames at HD2K = ~131 MB - safe headroom without OOM risk
         self.frame_queue = queue.Queue(maxsize=8)
@@ -100,14 +101,17 @@ def run_raw_processor(resolution_option):
         return
 
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir     = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}")
-    video_path = os.path.join(outdir, "raw_composite.mp4")
-    os.makedirs(outdir, exist_ok=True)
+    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.mkv")
+
+    actual_fps = cam_stream.actual_fps
+    if actual_fps != float(fps):
+        print(f"[Warning]   Camera FPS differs from requested: {fps} requested, "
+              f"{actual_fps:.1f} actual. Using actual for VideoWriter.")
 
     writer = cv2.VideoWriter(
         video_path,
-        cv2.VideoWriter_fourcc(*'mp4v'),
-        float(fps),
+        cv2.VideoWriter_fourcc(*'FFV1'),
+        actual_fps,
         (composite_w, eye_h),
         True,
     )
