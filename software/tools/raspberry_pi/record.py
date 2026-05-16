@@ -179,7 +179,7 @@ def run_raw_processor(resolution_option, use_mkv=False):
     record_start    = time.time()
     last_disk_check = 0.0
     frame_interval  = 1.0 / fps
-    last_enqueue_t  = 0.0
+    next_enqueue_t  = record_start   # first frame enqueued immediately
 
     try:
         while keep_running:
@@ -187,9 +187,9 @@ def run_raw_processor(resolution_option, use_mkv=False):
             if frame is None:
                 continue
             now = time.time()
-            if now - last_enqueue_t >= frame_interval:
+            if now >= next_enqueue_t:
                 enqueue_frame(frame)
-                last_enqueue_t = now
+                next_enqueue_t += frame_interval
 
             now = time.time()
             if now - last_disk_check >= DISK_CHECK_INTERVAL:
