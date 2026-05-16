@@ -48,13 +48,17 @@ ZED/
         video.mp4
         pose.npz
     tools/
+      video.py                   # stereo SVO recording via ZED SDK (requires pyzed)
+      recordings/                # SVO recordings land here
+        stereo_<timestamp>.svo2
       raspberry_pi/              # SDK-free pipeline for Raspberry Pi 4 data collection
-        record.py                # Pi: capture raw stereo AVI via UVC/V4L2 (no SDK/CUDA)
-        process.py               # Desktop: rectify raw AVI into left/right PNG sequences
+        record.py                # Pi: capture raw stereo video via UVC/V4L2 (no SDK/CUDA)
+        process.py               # Desktop: rectify raw video into left/right PNG sequences
         calibration/
           SN*.conf               # ZED calibration file (copy from ProgramData/Stereolabs/settings/)
         recordings/              # raw recordings land here
-          raw_stereo_<timestamp>.avi
+          raw_stereo_<timestamp>.mp4   # default (lossy)
+          raw_stereo_<timestamp>.mkv   # lossless (pass 'mkv' argument)
           raw_stereo_<timestamp>_extracted_<suffix>/
             left_rectified/
               frame_000000.png
@@ -119,24 +123,84 @@ Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi 4.
 **Step 1 - `record.py` (runs on Pi):**
 - Treats the ZED camera as a standard UVC device via V4L2 -- no ZED SDK or CUDA needed.
 - ZED outputs a composite side-by-side frame at double width (left|right) over USB 3.0.
-- Records raw stereo frames as HFYU lossless AVI -- no quality loss during capture.
-- CLI: `python record.py [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K (15 fps).
-- Ctrl+C stops recording; the frame queue is drained before the file is finalized.
-- AVI 2 GB limit applies at HD2K (~25 seconds); use HD1080 or HD720 for longer sessions.
-- Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.avi`.
+- Default: MP4/mp4v lossy. Pass `mkv` argument for MKV/HFYU lossless (no pixel degradation).
+  FFV1 was tried but is excluded from the custom FFmpeg build bundled with the OpenCV aarch64 wheel; HFYU is universally compiled in.
+- CLI: `python record.py [HD2K|HD1080|HD720|VGA] [mkv]` -- defaults to HD2K MP4.
+- Ctrl+C stops recording; the capture queue and write queue are both drained before the file
+  is finalized.
+- Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.mp4` (or `.mkv`).
+- Uses a dedicated writer thread (`write_loop`) decoupled from the capture loop via a 16-frame
+  `write_queue`. Disk writes never stall frame capture. If average write throughput falls below
+  capture fps, the oldest queued frame is dropped at the queue boundary. VideoWriter fps is set
+  to the same value as the capture fps, so the header is always correct.
+- Prints `[Stats]` on stop: frames written, elapsed time, actual fps. If actual fps < 95% of
+  target, a `[Warning]` is printed -- confirming whether the disk kept up.
+- **Fps values are capped below native camera fps** to stay within the Pi 4's sustained disk
+  write throughput (~44 M pixels/sec budget, derived from the observed HD2K write ceiling of
+  ~12 fps with 30-40% thermal headroom). Thermal throttling (CPU drops from 1.5GHz to 600MHz
+  above ~80C) can reduce throughput further during long sessions, which is why the budget is
+  conservative:
+  ```
+  HD2K   7.5 fps  (native 15 fps; 8 not achievable via integer frame-skip -- 15/8
+                   is not an integer; rate-limiter locks to 15/2 = 7.5)
+  FHD   10.0 fps  (native 30 fps; exact -- 30/10 = 3)
+  HD    15.0 fps  (native 30 fps; 20 not achievable -- 30/20 = 1.5 is not an integer;
+                   rate-limiter locks to 30/2 = 15)
+  VGA   30.0 fps  (native 30 fps; no cap needed)
+  ```
 
 **Step 2 - `process.py` (runs on desktop/laptop):**
 - Splits each composite frame into left and right halves, then applies stereo rectification
   using the ZED calibration parameters from `calibration/SN*.conf`.
 - CLI: `python process.py <video_file> [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
+- Accepts both `.mp4` and `.mkv` input.
 - Calibration file is auto-detected from `raspberry_pi/calibration/`. Copy it from:
   `C:\ProgramData\Stereolabs\settings\SN<serial>.conf` (requires ZED SDK installed on Windows).
 - Outputs PNG sequences: `<stem>_extracted_<suffix>/left_rectified/` and `right_rectified/`.
 - Rectified frames match the quality of `sl.VIEW.LEFT` / `sl.VIEW.RIGHT` from the SDK
-  (same calibration math; HFYU intermediate is lossless so no pixel degradation).
+  (same calibration math; HFYU MKV intermediate is lossless so no pixel degradation).
+
+### Stereo frame rate and write throughput
+
+`zed.grab()` blocks until the next camera frame when the main loop is fast enough. When
+per-iteration work (encode + write) exceeds the camera frame period (e.g. 66ms at HD2K
+15fps), `grab()` returns a buffered SDK frame immediately without blocking. Actual write
+rate = min(camera_fps, 1 / loop_time). If actual write rate < camera_fps while VideoWriter
+fps is set to camera_fps, the saved video plays back faster than real time (sped up).
+
+**Why `software.py` depth/pose modes are unaffected:** each mode writes only one video file
+per frame (left rectified only). Depth and pose data accumulate in RAM and flush to NPZ on
+stop. One small write per frame stays within the frame period, so `grab()` keeps blocking at
+camera_fps.
+
+**Why `video.py` previously had this problem:** writing two separate VideoWriter files per
+frame (left + right) doubled per-iteration encode overhead, pushing the loop past the frame
+period. Switching to ZED SDK SVO recording (`zed.enable_recording`) fixes this: the SDK
+records in a separate internal thread and feeds at camera_fps regardless of Python loop speed.
+
+**`record.py` (Pi) now uses a threaded writer:** `writer.write()` runs in a dedicated thread
+decoupled from the main capture loop via a 16-frame write queue. Disk I/O can no longer slow
+down capture. If average write throughput falls below camera_fps, the write queue fills and
+drops the oldest frame -- actual written fps falls -- but this does not cause sped-up playback
+because VideoWriter fps is always set to nominal camera_fps. The `[Stats]` print on stop
+reports actual fps, confirming whether any drops occurred.
+
+### If record.py write queue drops frames
+
+If `[Stats]` reports actual fps significantly below target (e.g. 10fps at HD2K), the Pi disk
+cannot sustain the write rate. Playback speed is correct (VideoWriter fps = nominal), but
+frames are missing -- the recording is shorter than real time. Options:
+
+- **Option B - Measured fps:** write N calibration frames to a temp VideoWriter, time the
+  actual write overhead, use measured_fps for the real VideoWriter. Recording duration is
+  accurate even when write rate < camera_fps, at the cost of discarding the first N frames.
+- **Option C - Post-process remux:** track frame count and wall-clock duration, then fix the
+  fps header after recording with `ffmpeg -r <actual_fps> -i input.mp4 -c copy output.mp4`.
 
 ### Video output convention
-All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out. If both left and right rectified frames are needed (e.g. for stereo reconstruction or disparity algorithms), use video.py inside software/tools.
+All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out.
+
+`software/tools/video.py` records full stereo as a single `stereo_<timestamp>.svo2` file using the ZED SDK's built-in SVO recorder (`zed.enable_recording`). SVO2 stores raw sensor data; left/right rectified views are reconstructed on playback through the SDK. Compression is selectable at launch: H264 lossy (default), H265 lossy, or Lossless.
 
 ### ZED SDK patterns
 - `sl.Camera` is the central object; always opened with `InitParameters` and closed with `zed.close()`.
