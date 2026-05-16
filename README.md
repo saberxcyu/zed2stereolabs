@@ -1,24 +1,26 @@
 # WiSeR ZED2 Tool
 
-This repo contains some tools we built for using the ZED2 stereo camera from Stereolabs (for depth sensing &pose tracking). 
+This repo contains some tools we built for using the ZED2 stereo camera from Stereolabs (for depth sensing & pose tracking). 
 The two major components within the repo include:
-- **A software that runs on Windows**: 
+- **Part 1: A software that runs on Windows**: 
   1. we use the software to do depth sensing and pose tracking.
   2. venv is managed by uv. see pyproject.toml for more details.
   3. requires the ZED SDK and CUDA (+TensorRT to speed up inference).
   4. comes with a video.py script in software/tools that captures strero videoes in SVO format, which can be opened by the SDK.
 
-See demonstrations below to get a feeling of the software.
+See snapshots below to get a feeling of the software.
+
 ![Software - Depth Sensing](assets/depth.png)
 ![Software - Pose Tracking](assets/pose.png)
 
-- **Some tools that run on Raspberry Pi**: 
+- **Part 2: Some tools that run on Raspberry Pi**: 
   1. we use the Pi mainly for data collection.
   2. does not require the SDK. treats the camera like a USB web cam.
   3. scripts are inside software/tools/raspberry_pi only.
   4. comes with two scripts: record.py (for recording a video) and process.py (for processing the video recorded into left / right rectified frames)
 
-See below for our setup with the Pi.
+Here is our setup with the Pi.
+
 ![Raspberry Pi Setup](assets/pi.png)
 
 ## 1. Requirements
