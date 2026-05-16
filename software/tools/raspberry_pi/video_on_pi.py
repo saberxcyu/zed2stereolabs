@@ -101,16 +101,20 @@ def run_raw_processor(resolution_option):
         return
 
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.mkv")
+    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.avi")
 
     actual_fps = cam_stream.actual_fps
     if actual_fps != float(fps):
         print(f"[Warning]   Camera FPS differs from requested: {fps} requested, "
               f"{actual_fps:.1f} actual. Using actual for VideoWriter.")
 
+    if eye_w == 2208:
+        print("[Warning]   HD2K + HFYU: AVI 2 GB limit reached in ~25 s. "
+              "Use HD1080/HD720 for longer recordings.")
+
     writer = cv2.VideoWriter(
         video_path,
-        cv2.VideoWriter_fourcc(*'FFV1'),
+        cv2.VideoWriter_fourcc(*'HFYU'),
         actual_fps,
         (composite_w, eye_h),
         True,

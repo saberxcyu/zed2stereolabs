@@ -71,7 +71,7 @@ def pick_video_file():
     recordings_dir = os.path.join(SCRIPT_DIR, 'recordings')
     path = filedialog.askopenfilename(
         title="Select raw composite video",
-        filetypes=[("Video files", "*.mp4 *.mkv"), ("All files", "*.*")],
+        filetypes=[("Video files", "*.mp4 *.mkv *.avi"), ("All files", "*.*")],
         initialdir=recordings_dir if os.path.isdir(recordings_dir) else SCRIPT_DIR
     )
     root.destroy()
