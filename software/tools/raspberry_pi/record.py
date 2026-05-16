@@ -14,6 +14,7 @@ os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
 
 MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free (covers ~25 s of HD2K HFYU)
 DISK_CHECK_INTERVAL = 30.0            # seconds between disk-space checks
+WARMUP_SECONDS      = 2.0             # discard frames while camera auto-exposure converges
 
 # (name, per-eye width, per-eye height, fps)
 # UVC composite width = per-eye width * 2 (left|right side-by-side)
@@ -105,12 +106,20 @@ def run_raw_processor(resolution_option, use_mkv=False):
         print("[Error] Failed to open camera.")
         return
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if use_mkv:
         ext, fourcc_str, info = '.mkv', 'HFYU', 'MKV/HFYU lossless'
     else:
         ext, fourcc_str, info = '.mp4', 'mp4v', 'MP4/mp4v lossy'
 
+    print(f"[Warmup]    {WARMUP_SECONDS:.0f}s (letting camera stabilize)...")
+    time.sleep(WARMUP_SECONDS)
+    while True:
+        try:
+            cam_stream.frame_queue.get_nowait()
+        except queue.Empty:
+            break
+
+    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}{ext}")
     actual_fps = float(fps)
     print(f"[Info]      {info} - no file size limit. Stops if < 2 GB free.")
@@ -141,6 +150,33 @@ def run_raw_processor(resolution_option, use_mkv=False):
     signal.signal(signal.SIGINT,  signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    written     = [0]
+    write_queue = queue.Queue(maxsize=16)   # ~1s buffer at HD2K 15fps
+
+    def enqueue_frame(f):
+        if not write_queue.full():
+            write_queue.put(f)
+        else:
+            try:
+                write_queue.get_nowait()   # drop oldest
+            except queue.Empty:
+                pass
+            write_queue.put(f)
+
+    def write_loop():
+        while True:
+            try:
+                f = write_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if f is None:   # sentinel
+                break
+            writer.write(f)
+            written[0] += 1
+
+    write_thread    = threading.Thread(target=write_loop, daemon=True)
+    write_thread.start()
+    record_start    = time.time()
     last_disk_check = 0.0
 
     try:
@@ -148,7 +184,7 @@ def run_raw_processor(resolution_option, use_mkv=False):
             frame = cam_stream.read_frame()
             if frame is None:
                 continue
-            writer.write(frame)
+            enqueue_frame(frame)
 
             now = time.time()
             if now - last_disk_check >= DISK_CHECK_INTERVAL:
@@ -163,12 +199,19 @@ def run_raw_processor(resolution_option, use_mkv=False):
         while True:
             try:
                 frame = cam_stream.frame_queue.get_nowait()
-                writer.write(frame)
+                enqueue_frame(frame)
             except queue.Empty:
                 break
+        write_queue.put(None)
+        write_thread.join(timeout=60)
         writer.release()
-        size_mb = os.path.getsize(video_path) / 1e6
-        print(f"[Saved]     {size_mb:.1f} MB -> {video_path}\n")
+        duration   = time.time() - record_start
+        actual_fps = written[0] / duration if duration > 0 else 0.0
+        size_mb    = os.path.getsize(video_path) / 1e6
+        print(f"[Saved]     {size_mb:.1f} MB -> {video_path}")
+        print(f"[Stats]     {written[0]} frames  {duration:.1f}s  {actual_fps:.1f} fps  (target {fps} fps)")
+        if written[0] > 0 and actual_fps < fps * 0.95:
+            print(f"[Warning]   Write rate {actual_fps:.1f} fps below target {fps} fps. Video may be sped up.")
 
 # ---------------------------------------------------------------------------
 # Entry point

@@ -1,8 +1,6 @@
 import sys
 import os
-import shutil
 from datetime import datetime
-import time
 
 import cv2
 import numpy as np
@@ -17,15 +15,21 @@ os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
 
 STEREO_WINDOW_NAME = "ZED Stereo Viewer  |  Left Rectified  +  Right Rectified"
 
+SVO_COMPRESSION_OPTIONS = [
+    ("H264     lossy  (default)",       sl.SVO_COMPRESSION_MODE.H264),
+    ("H265     lossy  (better ratio)",  sl.SVO_COMPRESSION_MODE.H265),
+    ("Lossless",                        sl.SVO_COMPRESSION_MODE.LOSSLESS),
+]
+
 
 def show_stereo_settings_dialog():
-    """Resolution picker for stereo recording. Returns (name, sl.RESOLUTION, w, h, fps) or None."""
+    """Resolution and compression picker. Returns (resolution_option, sl.SVO_COMPRESSION_MODE) or None."""
     result = [None]
 
     root = tk.Tk()
     root.title("Stereo Video Settings")
     root.resizable(False, False)
-    _center_window(root, 380, 280)
+    _center_window(root, 520, 280)
 
     tk.Label(root, text="Stereo Video Settings",
              font=("Helvetica", 14, "bold")).pack(pady=(16, 10))
@@ -43,8 +47,18 @@ def show_stereo_settings_dialog():
                        variable=choice, value=i,
                        font=("Helvetica", 10)).pack(anchor='w')
 
+    right = tk.LabelFrame(panels, text="Compression",
+                          font=("Helvetica", 10, "bold"), padx=10, pady=8)
+    right.pack(side=tk.LEFT, fill='y', padx=(12, 0))
+
+    comp_choice = tk.IntVar(value=0)  # default: H264
+    for i, (label, _) in enumerate(SVO_COMPRESSION_OPTIONS):
+        tk.Radiobutton(right, text=label, variable=comp_choice, value=i,
+                       font=("Helvetica", 10)).pack(anchor='w')
+
     def on_start():
-        result[0] = RESOLUTION_OPTIONS[choice.get()]
+        _, comp_type = SVO_COMPRESSION_OPTIONS[comp_choice.get()]
+        result[0] = (RESOLUTION_OPTIONS[choice.get()], comp_type)
         root.destroy()
 
     tk.Button(root, text="Start Recording", width=16, font=("Helvetica", 11),
@@ -55,9 +69,9 @@ def show_stereo_settings_dialog():
     return result[0]
 
 
-def stereo_video_mode(resolution_option):
+def stereo_video_mode(resolution_option, compression_type=sl.SVO_COMPRESSION_MODE.H264):
     """
-    Open ZED, display side-by-side rectified frames, record with 's'.
+    Open ZED, display side-by-side rectified frames, record SVO with 's'.
     Returns 'back' (q pressed) or 'quit' (window closed).
     """
     name, resolution, w, h, fps = resolution_option
@@ -68,22 +82,21 @@ def stereo_video_mode(resolution_option):
 
     zed = sl.Camera()
     status = zed.open(init)
-    if status > sl.ERROR_CODE.SUCCESS:
+    if status != sl.ERROR_CODE.SUCCESS:
         print(repr(status))
         return 'back'
 
     display_res = get_display_resolution(zed)
-    print(f"[Resolution] {name}  ({display_res.width} x {display_res.height} @ {fps} fps)")
+    camera_fps  = float(zed.get_camera_information().camera_configuration.fps)
+    print(f"[Resolution] {name}  ({display_res.width} x {display_res.height} @ {camera_fps:.0f} fps)")
     print("Press 's' to start/stop recording | 'q' to return to menu")
 
     left_mat  = sl.Mat()
     right_mat = sl.Mat()
 
-    recording    = False
-    left_writer  = None
-    right_writer = None
-    outdir       = None
-    ts           = None
+    recording = False
+    ts        = None
+    svo_path  = None
 
     status_msg   = 'Press [s] to start recording - [q] to return to menu'
     status_color = (200, 200, 200)
@@ -103,13 +116,10 @@ def stereo_video_mode(resolution_option):
                 left_bgr  = cv2.cvtColor(left_mat.get_data(),  cv2.COLOR_BGRA2BGR)
                 right_bgr = cv2.cvtColor(right_mat.get_data(), cv2.COLOR_BGRA2BGR)
 
-                if recording:
-                    if left_writer  is not None: left_writer.write(left_bgr)
-                    if right_writer is not None: right_writer.write(right_bgr)
-
                 display_frame = np.concatenate([left_bgr, right_bgr], axis=1)
                 draw_status(display_frame, status_msg, status_color, recording)
-                cv2.imshow(STEREO_WINDOW_NAME, display_frame)
+                display_small = cv2.resize(display_frame, (1920, 540), interpolation=cv2.INTER_AREA)
+                cv2.imshow(STEREO_WINDOW_NAME, display_small)
                 key = cv2.waitKey(1) & 0xFF
 
                 if cv2.getWindowProperty(STEREO_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
@@ -118,61 +128,41 @@ def stereo_video_mode(resolution_option):
 
                 if key == ord('s'):
                     if not recording:
-                        ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        outdir = os.path.join(TOOLS_RECORDING_DIR, f"stereo_{ts}")
-                        os.makedirs(outdir, exist_ok=True)
-
-                        fourcc       = cv2.VideoWriter_fourcc(*'mp4v')
-                        frame_size   = (display_res.width, display_res.height)
-                        left_writer  = cv2.VideoWriter(
-                            os.path.join(outdir, "left.mp4"),  fourcc, float(fps), frame_size, True)
-                        right_writer = cv2.VideoWriter(
-                            os.path.join(outdir, "right.mp4"), fourcc, float(fps), frame_size, True)
-
-                        if not left_writer.isOpened():
-                            print("[Warning] Could not open left VideoWriter. Left video disabled.")
-                            left_writer = None
-                        if not right_writer.isOpened():
-                            print("[Warning] Could not open right VideoWriter. Right video disabled.")
-                            right_writer = None
-
-                        recording    = True
-                        status_msg   = 'Recording started - press [s] again to stop'
-                        status_color = (0, 80, 255)
-                        print(f"[Started]   Recording to {outdir}/")
-
+                        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        svo_path = os.path.join(TOOLS_RECORDING_DIR, f"stereo_{ts}.svo2")
+                        rec_params = sl.RecordingParameters()
+                        rec_params.video_filename   = svo_path
+                        rec_params.compression_mode = compression_type
+                        err = zed.enable_recording(rec_params)
+                        if err != sl.ERROR_CODE.SUCCESS:
+                            print(f"[Error]     Could not start SVO recording: {repr(err)}")
+                            svo_path = None
+                        else:
+                            recording    = True
+                            print(f"[Recording] {svo_path}")
+                            status_msg   = 'Recording SVO - press [s] to stop'
+                            status_color = (0, 80, 255)
                     else:
+                        zed.disable_recording()
                         recording = False
-                        if left_writer  is not None:
-                            left_writer.release()
-                            left_writer = None
-                        if right_writer is not None:
-                            right_writer.release()
-                            right_writer = None
-
-                        saving_frame = display_frame.copy()
-                        draw_status(saving_frame, f'Saving to {outdir} ...', (0, 220, 255), False)
-                        cv2.imshow(STEREO_WINDOW_NAME, saving_frame)
-                        cv2.waitKey(1)
-
-                        left_mb  = os.path.getsize(os.path.join(outdir, "left.mp4"))  / 1e6
-                        right_mb = os.path.getsize(os.path.join(outdir, "right.mp4")) / 1e6
-                        print(f"[Saved]     {outdir}/  ({left_mb:.1f} MB + {right_mb:.1f} MB)")
-                        status_msg   = f'Saved: stereo_{ts} - press [s] to record again'
+                        size_mb   = os.path.getsize(svo_path) / 1e6
+                        print(f"[Saved]     {size_mb:.1f} MB -> {svo_path}")
+                        status_msg   = f'Saved: stereo_{ts}.svo2 - press [s] to record again'
                         status_color = (0, 210, 0)
+                        svo_path     = None
 
                 elif key == ord('q'):
                     exit_reason = 'back'
                     break
 
     finally:
+        if recording and svo_path:
+            zed.disable_recording()
+            try: os.remove(svo_path)
+            except OSError: pass
+            print("[Discarded] Recording cancelled - no file saved.")
         left_mat.free(sl.MEM.CPU)
         right_mat.free(sl.MEM.CPU)
-        if left_writer  is not None: left_writer.release()
-        if right_writer is not None: right_writer.release()
-        if recording and outdir is not None and os.path.exists(outdir):
-            shutil.rmtree(outdir, ignore_errors=True)
-            print("[Discarded] Recording cancelled - no files saved.")
         zed.close()
         cv2.destroyAllWindows()
 
@@ -184,7 +174,8 @@ def main():
         settings = show_stereo_settings_dialog()
         if settings is None:       # [x] on dialog -> exit
             break
-        result = stereo_video_mode(settings)
+        res_option, compression_type = settings
+        result = stereo_video_mode(res_option, compression_type=compression_type)
         if result == 'quit':       # [x] on camera window -> exit
             break
         # result == 'back' ([q] pressed) -> loop back to dialog
