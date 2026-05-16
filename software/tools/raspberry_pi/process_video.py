@@ -1,9 +1,8 @@
 import os
+import sys
 import math
 import glob
 import configparser
-import tkinter as tk
-from tkinter import filedialog
 import cv2
 import numpy as np
 
@@ -11,72 +10,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # calib_suffix matches LEFT_CAM_<suffix> / RIGHT_CAM_<suffix> sections in the .conf file
 # and CV_<suffix>, RX_<suffix>, RZ_<suffix> keys in [STEREO]
-RESOLUTION_OPTIONS = [
-    ("HD2K   2208 x 1242  @  15 fps", "2K",  2208, 1242),
-    ("HD1080 1920 x 1080  @  30 fps", "FHD", 1920, 1080),
-    ("HD720  1280 x 720   @  30 fps", "HD",  1280,  720),
-    ("VGA     672 x 376   @  30 fps", "VGA",  672,  376),
-]
+RESOLUTION_OPTIONS = {
+    "HD2K":   ("2K",  2208, 1242),
+    "HD1080": ("FHD", 1920, 1080),
+    "HD720":  ("HD",  1280,  720),
+    "VGA":    ("VGA",  672,  376),
+}
 
 # ---------------------------------------------------------------------------
-# Dialogs
+# Calibration detection
 # ---------------------------------------------------------------------------
-
-def _center_window(root, w, h):
-    root.update_idletasks()
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
-
-
-def pick_resolution():
-    """Show dialog to select the resolution used during recording.
-    Returns (calib_suffix, eye_w, eye_h) or None if cancelled."""
-    result = [None]
-    root = tk.Tk()
-    root.title("Select Recording Resolution")
-    root.resizable(False, False)
-    _center_window(root, 400, 260)
-
-    tk.Label(root, text="Recording Resolution",
-             font=("Helvetica", 14, "bold")).pack(pady=(16, 4))
-    tk.Label(root, text="Select the resolution that was used when recording on the Pi.",
-             font=("Helvetica", 9), fg="#555555").pack(pady=(0, 8))
-
-    frame = tk.LabelFrame(root, text="Resolution", font=("Helvetica", 10, "bold"), padx=10, pady=8)
-    frame.pack(padx=20, fill='x')
-
-    choice = tk.IntVar(value=0)
-    for i, (label, _, _, _) in enumerate(RESOLUTION_OPTIONS):
-        tk.Radiobutton(frame, text=label, variable=choice, value=i,
-                       font=("Helvetica", 10)).pack(anchor='w')
-
-    def on_ok():
-        _, suf, w, h = RESOLUTION_OPTIONS[choice.get()]
-        result[0] = (suf, w, h)
-        root.destroy()
-
-    tk.Button(root, text="Select Video File", width=16, font=("Helvetica", 11),
-              command=on_ok, bg="#1a3a5c", fg="white").pack(pady=12)
-
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
-    root.mainloop()
-    return result[0]
-
-
-def pick_video_file():
-    """File picker for the raw_composite.mp4. Returns path string or None."""
-    root = tk.Tk()
-    root.withdraw()
-    recordings_dir = os.path.join(SCRIPT_DIR, 'recordings')
-    path = filedialog.askopenfilename(
-        title="Select raw composite video",
-        filetypes=[("Video files", "*.mp4 *.mkv *.avi"), ("All files", "*.*")],
-        initialdir=recordings_dir if os.path.isdir(recordings_dir) else SCRIPT_DIR
-    )
-    root.destroy()
-    return path if path else None
-
 
 def find_calibration_file():
     """Auto-detect *.conf in calibration/ next to this script. Returns path or None."""
@@ -193,20 +136,22 @@ def process_video(video_path, conf_path, calib_suffix, eye_w, eye_h, output_dir)
 # ---------------------------------------------------------------------------
 
 def main():
-    # Step 1: resolution picker
-    res = pick_resolution()
-    if res is None:
-        print("[Cancelled] No resolution selected.")
-        return
-    calib_suffix, eye_w, eye_h = res
-
-    # Step 2: video file picker
-    video_path = pick_video_file()
-    if not video_path:
-        print("[Cancelled] No video file selected.")
+    if len(sys.argv) < 2:
+        print("Usage: python process_video.py <video_file> [HD2K|HD1080|HD720|VGA]")
         return
 
-    # Step 3: auto-detect calibration file
+    video_path = os.path.abspath(sys.argv[1])
+    if not os.path.isfile(video_path):
+        print(f"[Error] File not found: {video_path}")
+        return
+
+    res_name = sys.argv[2].upper() if len(sys.argv) > 2 else "HD2K"
+    if res_name not in RESOLUTION_OPTIONS:
+        print(f"[Error] Unknown resolution '{res_name}'.")
+        print(f"        Options: {', '.join(RESOLUTION_OPTIONS)}")
+        return
+    calib_suffix, eye_w, eye_h = RESOLUTION_OPTIONS[res_name]
+
     conf_path = find_calibration_file()
     if conf_path is None:
         calib_dir = os.path.join(SCRIPT_DIR, 'calibration')
@@ -214,7 +159,6 @@ def main():
         print("        Copy your SN*.conf file there and retry.")
         return
 
-    # Step 4: derive output directory from the video filename stem
     video_stem = os.path.splitext(os.path.basename(video_path))[0]
     output_dir = os.path.join(os.path.dirname(video_path),
                               f"{video_stem}_extracted_{calib_suffix}")
