@@ -71,10 +71,14 @@ Saves to `software/recordings/depth_<timestamp>/`:
 - `video.mp4` -- left rectified frames
 - `depth.npz` -- per-frame depth data and timestamps
 
+![Depth Record Mode](assets/depth.png)
+
 ### 2.2 Depth Analyze
 
 Folder picker -> matplotlib viewer. Click a pixel or drag a region to plot depth (m) over
 time. Slider scrubs frames; `[>]` plays. `q` or `[x]` to exit.
+
+![Depth Analyze Mode](assets/depth_analyze.png)
 
 ### 2.3 Pose Record
 
@@ -91,12 +95,17 @@ Saves to `software/recordings/pose_<timestamp>/`:
 - `video.mp4` -- left rectified frames
 - `pose.npz` -- 3D/2D keypoints, tracking IDs, and confidence per frame
 
+![Software - Pose Tracking](assets/pose.png)
+
+
 ### 2.4 Pose Analyze
 
 Folder picker -> matplotlib viewer. Select a keypoint from the radio button list to plot
 its X (red), Y (green), Z (blue) position in meters over time. The coordinate gizmo in the
 video panel shows orientation: X = right, Y = up, Z = into screen. Slider scrubs frames;
 `[>]` plays. `q` or `[x]` to exit.
+
+![Software - Pose Tracking](assets/pose_analyze.png)
 
 ---
 
