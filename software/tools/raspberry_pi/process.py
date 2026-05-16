@@ -6,7 +6,8 @@ import configparser
 import cv2
 import numpy as np
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR           = os.path.dirname(os.path.abspath(__file__))
+SUPPORTED_EXTENSIONS = {'.mkv', '.mp4'}
 
 # calib_suffix matches LEFT_CAM_<suffix> / RIGHT_CAM_<suffix> sections in the .conf file
 # and CV_<suffix>, RX_<suffix>, RZ_<suffix> keys in [STEREO]
@@ -91,6 +92,7 @@ def process_video(video_path, conf_path, calib_suffix, eye_w, eye_h, output_dir)
     os.makedirs(os.path.join(output_dir, "right_rectified"), exist_ok=True)
 
     print(f"[Processing] {os.path.basename(video_path)}")
+    print(f"[Format]     {os.path.splitext(video_path)[1].upper()[1:]} (decoded via OpenCV/FFmpeg)")
     print(f"[Resolution] {eye_w} x {eye_h} per eye  (suffix: {calib_suffix})")
     print(f"[Output]     {output_dir}")
 
@@ -143,6 +145,11 @@ def main():
     video_path = os.path.abspath(sys.argv[1])
     if not os.path.isfile(video_path):
         print(f"[Error] File not found: {video_path}")
+        return
+
+    ext = os.path.splitext(video_path)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        print(f"[Error] Unsupported file type '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         return
 
     res_name = sys.argv[2].upper() if len(sys.argv) > 2 else "HD2K"

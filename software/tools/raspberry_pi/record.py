@@ -12,7 +12,7 @@ import cv2
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
 
-MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free (covers ~30 s of HD2K FFV1)
+MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free (covers ~25 s of HD2K HFYU)
 DISK_CHECK_INTERVAL = 30.0            # seconds between disk-space checks
 
 # (name, per-eye width, per-eye height, fps)
@@ -91,7 +91,7 @@ class ThreadedCameraUVC:
 # Recording pipeline
 # ---------------------------------------------------------------------------
 
-def run_raw_processor(resolution_option):
+def run_raw_processor(resolution_option, use_mkv=False):
     name, eye_w, eye_h, fps = resolution_option
     composite_w = eye_w * 2
 
@@ -105,15 +105,19 @@ def run_raw_processor(resolution_option):
         print("[Error] Failed to open camera.")
         return
 
-    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.mkv")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if use_mkv:
+        ext, fourcc_str, info = '.mkv', 'HFYU', 'MKV/HFYU lossless'
+    else:
+        ext, fourcc_str, info = '.mp4', 'mp4v', 'MP4/mp4v lossy'
 
+    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}{ext}")
     actual_fps = float(fps)
-    print(f"[Info]      MKV/FFV1 lossless - no file size limit. Stops if < 2 GB free.")
+    print(f"[Info]      {info} - no file size limit. Stops if < 2 GB free.")
 
     writer = cv2.VideoWriter(
         video_path,
-        cv2.VideoWriter_fourcc(*'FFV1'),
+        cv2.VideoWriter_fourcc(*fourcc_str),
         actual_fps,
         (composite_w, eye_h),
         True,
@@ -171,17 +175,23 @@ def run_raw_processor(resolution_option):
 # ---------------------------------------------------------------------------
 
 def main():
-    res_name = sys.argv[1].upper() if len(sys.argv) > 1 else "HD2K"
-    options  = {name: (name, w, h, fps) for name, w, h, fps in RESOLUTION_OPTIONS}
+    options    = {name: (name, w, h, fps) for name, w, h, fps in RESOLUTION_OPTIONS}
+    argv_lower = [a.lower() for a in sys.argv[1:]]
+    use_mkv    = 'mkv' in argv_lower
+    res_args   = [a.upper() for a in argv_lower if a != 'mkv']
 
-    if res_name not in options:
-        print(f"[Error] Unknown resolution '{res_name}'.")
-        print(f"        Options: {', '.join(options)}")
+    unknown = [a for a in res_args if a not in options]
+    if unknown:
+        print(f"[Error] Unknown argument(s): {', '.join(unknown)}")
+        print(f"        Resolution options: {', '.join(options)}")
+        print(f"        Format options: mkv (default: mp4)")
         return
 
+    res_name = res_args[0] if res_args else 'HD2K'
     name, w, h, fps = options[res_name]
-    print(f"[Config]    Resolution: {name}  ({w * 2} x {h} composite @ {fps} fps)")
-    run_raw_processor(options[res_name])
+    fmt = 'MKV lossless' if use_mkv else 'MP4 lossy'
+    print(f"[Config]    Resolution: {name}  ({w * 2} x {h} composite @ {fps} fps)  Format: {fmt}")
+    run_raw_processor(options[res_name], use_mkv=use_mkv)
 
 
 if __name__ == "__main__":
