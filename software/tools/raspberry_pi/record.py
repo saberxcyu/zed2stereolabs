@@ -178,13 +178,18 @@ def run_raw_processor(resolution_option, use_mkv=False):
     write_thread.start()
     record_start    = time.time()
     last_disk_check = 0.0
+    frame_interval  = 1.0 / fps
+    last_enqueue_t  = 0.0
 
     try:
         while keep_running:
             frame = cam_stream.read_frame()
             if frame is None:
                 continue
-            enqueue_frame(frame)
+            now = time.time()
+            if now - last_enqueue_t >= frame_interval:
+                enqueue_frame(frame)
+                last_enqueue_t = now
 
             now = time.time()
             if now - last_disk_check >= DISK_CHECK_INTERVAL:
