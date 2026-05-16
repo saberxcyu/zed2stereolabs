@@ -19,10 +19,10 @@ WARMUP_SECONDS      = 2.0             # discard frames while camera auto-exposur
 # (name, per-eye width, per-eye height, fps)
 # UVC composite width = per-eye width * 2 (left|right side-by-side)
 RESOLUTION_OPTIONS = [
-    ("HD2K",   2208, 1242,  8),
-    ("HD1080", 1920, 1080, 10),
-    ("HD720",  1280,  720, 20),
-    ("VGA",     672,  376, 30),
+    ("HD2K",   2208, 1242,  7.5),
+    ("HD1080", 1920, 1080, 10  ),
+    ("HD720",  1280,  720, 15  ),
+    ("VGA",     672,  376, 30  ),
 ]
 
 # ---------------------------------------------------------------------------
