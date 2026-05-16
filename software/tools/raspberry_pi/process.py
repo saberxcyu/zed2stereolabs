@@ -137,7 +137,7 @@ def process_video(video_path, conf_path, calib_suffix, eye_w, eye_h, output_dir)
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python process_video.py <video_file> [HD2K|HD1080|HD720|VGA]")
+        print("Usage: python process.py <video_file> [HD2K|HD1080|HD720|VGA]")
         return
 
     video_path = os.path.abspath(sys.argv[1])

@@ -48,11 +48,20 @@ ZED/
         video.mp4
         pose.npz
     tools/
-      video.py          # standalone stereo recorder: both left + right rectified frames
-      recordings/       # stereo recordings land here
-        stereo_<timestamp>/
-          left.mp4
-          right.mp4
+      raspberry_pi/              # SDK-free pipeline for Raspberry Pi 4 data collection
+        record.py                # Pi: capture raw stereo AVI via UVC/V4L2 (no SDK/CUDA)
+        process.py               # Desktop: rectify raw AVI into left/right PNG sequences
+        calibration/
+          SN*.conf               # ZED calibration file (copy from ProgramData/Stereolabs/settings/)
+        recordings/              # raw recordings land here
+          raw_stereo_<timestamp>.avi
+          raw_stereo_<timestamp>_extracted_<suffix>/
+            left_rectified/
+              frame_000000.png
+              ...
+            right_rectified/
+              frame_000000.png
+              ...
   .venv/
   pyproject.toml
   CLAUDE.md
@@ -103,8 +112,31 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 - A red dashed vertical line tracks the current frame position on the chart as the slider is dragged.
 - Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
 
+### Raspberry Pi pipeline
+
+Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi 4.
+
+**Step 1 - `record.py` (runs on Pi):**
+- Treats the ZED camera as a standard UVC device via V4L2 -- no ZED SDK or CUDA needed.
+- ZED outputs a composite side-by-side frame at double width (left|right) over USB 3.0.
+- Records raw stereo frames as HFYU lossless AVI -- no quality loss during capture.
+- CLI: `python record.py [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K (15 fps).
+- Ctrl+C stops recording; the frame queue is drained before the file is finalized.
+- AVI 2 GB limit applies at HD2K (~25 seconds); use HD1080 or HD720 for longer sessions.
+- Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.avi`.
+
+**Step 2 - `process.py` (runs on desktop/laptop):**
+- Splits each composite frame into left and right halves, then applies stereo rectification
+  using the ZED calibration parameters from `calibration/SN*.conf`.
+- CLI: `python process.py <video_file> [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
+- Calibration file is auto-detected from `raspberry_pi/calibration/`. Copy it from:
+  `C:\ProgramData\Stereolabs\settings\SN<serial>.conf` (requires ZED SDK installed on Windows).
+- Outputs PNG sequences: `<stem>_extracted_<suffix>/left_rectified/` and `right_rectified/`.
+- Rectified frames match the quality of `sl.VIEW.LEFT` / `sl.VIEW.RIGHT` from the SDK
+  (same calibration math; HFYU intermediate is lossless so no pixel degradation).
+
 ### Video output convention
-All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out. If both left and right rectified frames are needed (e.g. for stereo reconstruction or disparity algorithms), use `tools/video.py` instead, which saves `left.mp4` and `right.mp4` separately.
+All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out. If both left and right rectified frames are needed (e.g. for stereo reconstruction or disparity algorithms), use video.py inside software/tools.
 
 ### ZED SDK patterns
 - `sl.Camera` is the central object; always opened with `InitParameters` and closed with `zed.close()`.

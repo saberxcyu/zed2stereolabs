@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import shutil
 from datetime import datetime
 import threading
 import queue
@@ -9,6 +11,9 @@ import cv2
 
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
+
+MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free (covers ~30 s of HD2K FFV1)
+DISK_CHECK_INTERVAL = 30.0            # seconds between disk-space checks
 
 # (name, per-eye width, per-eye height, fps)
 # UVC composite width = per-eye width * 2 (left|right side-by-side)
@@ -101,20 +106,14 @@ def run_raw_processor(resolution_option):
         return
 
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.avi")
+    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.mkv")
 
-    actual_fps = cam_stream.actual_fps
-    if actual_fps != float(fps):
-        print(f"[Warning]   Camera FPS differs from requested: {fps} requested, "
-              f"{actual_fps:.1f} actual. Using actual for VideoWriter.")
-
-    if eye_w == 2208:
-        print("[Warning]   HD2K + HFYU: AVI 2 GB limit reached in ~25 s. "
-              "Use HD1080/HD720 for longer recordings.")
+    actual_fps = float(fps)
+    print(f"[Info]      MKV/FFV1 lossless - no file size limit. Stops if < 2 GB free.")
 
     writer = cv2.VideoWriter(
         video_path,
-        cv2.VideoWriter_fourcc(*'HFYU'),
+        cv2.VideoWriter_fourcc(*'FFV1'),
         actual_fps,
         (composite_w, eye_h),
         True,
@@ -138,12 +137,23 @@ def run_raw_processor(resolution_option):
     signal.signal(signal.SIGINT,  signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    last_disk_check = 0.0
+
     try:
         while keep_running:
             frame = cam_stream.read_frame()
             if frame is None:
                 continue
             writer.write(frame)
+
+            now = time.time()
+            if now - last_disk_check >= DISK_CHECK_INTERVAL:
+                last_disk_check = now
+                free = shutil.disk_usage(TOOLS_RECORDING_DIR).free
+                if free < MIN_FREE_SPACE:
+                    print(f"\n[Warning]   Disk nearly full ({free // 1_000_000:.0f} MB free). Stopping.")
+                    keep_running = False
+
     finally:
         cam_stream.stop()
         while True:
