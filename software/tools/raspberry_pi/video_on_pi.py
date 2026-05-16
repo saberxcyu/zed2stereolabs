@@ -146,6 +146,12 @@ def run_raw_processor(resolution_option):
             writer.write(frame)
     finally:
         cam_stream.stop()
+        while True:
+            try:
+                frame = cam_stream.frame_queue.get_nowait()
+                writer.write(frame)
+            except queue.Empty:
+                break
         writer.release()
         size_mb = os.path.getsize(video_path) / 1e6
         print(f"[Saved]     {size_mb:.1f} MB -> {video_path}\n")
