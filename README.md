@@ -1,4 +1,4 @@
-# ZED2 tools
+# Project Description
 
 This repo contains some tools we built for using the ZED2 stereo camera from Stereolabs (for depth sensing & pose tracking). 
 The two major components within the repo include:
@@ -22,10 +22,11 @@ See snapshots below to get a feeling of the software.
 Here is our setup with the Pi.
 
 ![Raspberry Pi Setup](assets/pi.png)
+---
 
 ## 1. Set Up
 
-### 1.1 For Running the Software on Linux (Ubuntu 22)
+### 1.1 Setup for Running the Software on Linux (Ubuntu 22)
 
 Requirements:
 - Ubuntu 22.04 LTS will be preferred (otherwise the SDK needs to be manually set up)
@@ -38,7 +39,6 @@ Requirements:
 
 ![CUDA Toolkit](assets/cudatoolkit.png)
 Side note: As you can see I did use arch linux here but to avoid all the hassles Ubuntu is recommended.
-
 
 **Step 2. Install ZED SDK** 
 
@@ -63,15 +63,14 @@ cd into project dircetory, then do
 uv sync
 ```
 
-### 1.2 For Data Collection on Raspberry Pi
+### 1.2 Setup for Collecting Data on Raspberry Pi
 - We used a Raspberry Pi 4
 - USB 3.0 ports for the camera
 - OpenCV 4.12.0
-- set up python environment and run as
+- set up python environment and run as (for more details on how to run see section 4)
 ```
 python record.py 
 ```
-(for more details, see below)
 ---
 
 ## 2. Software Pipeline
@@ -86,6 +85,7 @@ uv run software.py
 A mode selection window opens with four options:
 
 ![Software - Mode Selection](assets/mode_selection.png)
+
 
 ### 2.1 Depth Record
 
@@ -103,12 +103,14 @@ Saves to `software/recordings/depth_<timestamp>/`:
 
 ![Depth Record Mode](assets/depth.png)
 
+
 ### 2.2 Depth Analyze
 
 Folder picker -> matplotlib viewer. Click a pixel or drag a region to plot depth (m) over
 time. Slider scrubs frames; `[>]` plays. `q` or `[x]` to exit.
 
 ![Depth Analyze Mode](assets/depth_analyze.png)
+
 
 ### 2.3 Pose Record
 
@@ -136,7 +138,6 @@ video panel shows orientation: X = right, Y = up, Z = into screen. Slider scrubs
 `[>]` plays. `q` or `[x]` to exit.
 
 ![Software - Pose Tracking](assets/pose_analyze.png)
-
 ---
 
 ## 3. Stereo SVO recorder
@@ -219,6 +220,7 @@ We separated the rectification from record.py to free up the PI for data collect
     frame_000001.png
     ...
 ```
+---
 
 ## 5 Use of AI
 
