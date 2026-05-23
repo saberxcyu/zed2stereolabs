@@ -64,7 +64,7 @@ uv sync
 ```
 
 ### 1.2 Setup for Collecting Data on Raspberry Pi
-- We used a Raspberry Pi 4
+- We used a Raspberry Pi 5 (Model B Rev 1.1)
 - USB 3.0 ports for the camera
 - OpenCV 4.12.0
 - set up python environment and run as (for more details on how to run see section 4)
@@ -186,7 +186,7 @@ loss). Press Ctrl+C to stop; the recording is finalized and stats are printed.
 
 Saves to `software/tools/raspberry_pi/recordings/raw_stereo_<timestamp>.mp4` (or `.mkv`).
 
-Recorded frame rates (capped for Pi 4 disk throughput):
+Recorded frame rates (capped for throughput, video encoding can't catch up on CPU):
 
 | Resolution | Composite size | Recorded fps |
 |------------|----------------|-------------|
@@ -197,6 +197,7 @@ Recorded frame rates (capped for Pi 4 disk throughput):
 
 The ZED can do 15 FPS at HD2K, 30 FPS at other resolutions, but the PI cannot keep up with writing the videoes. 
 Therefore, here we hardcoded some somewhat conservative limits to the FPS for the Raspberry PI. We have tested these on our PI and confirmed the PI worked OK. 
+Pi 5 has no dedicated h.264 hardware encoder.
 
 ### 4.3 Rectify on Pi or elsewhere
 
