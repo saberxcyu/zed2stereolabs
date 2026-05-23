@@ -117,21 +117,21 @@ def show_mode_dialog():
     root.resizable(False, False)
     _center_window(root, 520, 280)
 
-    tk.Label(root, text="Select Mode", font=("Helvetica", 16, "bold")).pack(pady=(16, 10))
+    tk.Label(root, text="Select Mode", font=("DejaVu Sans", 16, "bold")).pack(pady=(16, 10))
 
     def _btn(parent, text, mode, bg):
         def cmd():
             result[0] = mode
             root.destroy()
-        tk.Button(parent, text=text, width=14, height=2, font=("Helvetica", 12),
+        tk.Button(parent, text=text, width=14, height=2, font=("DejaVu Sans", 12),
                   command=cmd, bg=bg, fg="white").pack(side=tk.LEFT, padx=14, pady=8)
 
-    depth_frame = tk.LabelFrame(root, text="Depth", font=("Helvetica", 10, "bold"), padx=6)
+    depth_frame = tk.LabelFrame(root, text="Depth", font=("DejaVu Sans", 10, "bold"), padx=6)
     depth_frame.pack(padx=20, pady=4, fill='x')
     _btn(depth_frame, "Record",  'record',  "#2c5f2e")
     _btn(depth_frame, "Analyze", 'analyze', "#1a3a5c")
 
-    pose_frame = tk.LabelFrame(root, text="Pose", font=("Helvetica", 10, "bold"), padx=6)
+    pose_frame = tk.LabelFrame(root, text="Pose", font=("DejaVu Sans", 10, "bold"), padx=6)
     pose_frame.pack(padx=20, pady=4, fill='x')
     _btn(pose_frame, "Record",  'pose',         "#5a2d82")
     _btn(pose_frame, "Analyze", 'pose_analyze', "#2d5a82")
@@ -150,27 +150,27 @@ def show_record_settings_dialog():
     result = [None]
 
     root = tk.Tk()
-    root.title("Recording Settings")
+    root.title("ZED Recording Settings")
     root.resizable(False, False)
     _center_window(root, 600, 280)
 
     tk.Label(root, text="Recording Settings",
-             font=("Helvetica", 14, "bold")).pack(pady=(16, 10))
+             font=("DejaVu Sans", 14, "bold")).pack(pady=(16, 10))
 
     panels = tk.Frame(root)
     panels.pack(padx=20, fill='x')
 
     # Left: resolution radio buttons
-    left = tk.LabelFrame(panels, text="Resolution", font=("Helvetica", 10, "bold"), padx=10, pady=8)
+    left = tk.LabelFrame(panels, text="Resolution", font=("DejaVu Sans", 10, "bold"), padx=10, pady=8)
     left.pack(side=tk.LEFT, fill='y', padx=(0, 10))
 
     choice = tk.IntVar(value=0)  # default: HD2K
     for i, (name, _, w, h, fps) in enumerate(RESOLUTION_OPTIONS):
         tk.Radiobutton(left, text=f"{name}   {w} x {h}  @  {fps} fps",
-                       variable=choice, value=i, font=("Helvetica", 10)).pack(anchor='w')
+                       variable=choice, value=i, font=("DejaVu Sans", 10)).pack(anchor='w')
 
     # Right: depth range entries
-    right = tk.LabelFrame(panels, text="Depth Range", font=("Helvetica", 10, "bold"), padx=14, pady=8)
+    right = tk.LabelFrame(panels, text="Depth Range", font=("DejaVu Sans", 10, "bold"), padx=14, pady=8)
     right.pack(side=tk.LEFT, fill='both', expand=True)
 
     tk.Label(right, text="Min depth (m):").grid(row=0, column=0, sticky='w', pady=6)
@@ -181,7 +181,7 @@ def show_record_settings_dialog():
     max_var = tk.StringVar(value="1.5")
     tk.Entry(right, textvariable=max_var, width=8).grid(row=1, column=1, padx=8)
 
-    err_label = tk.Label(right, text="", fg="red", font=("Helvetica", 9))
+    err_label = tk.Label(right, text="", fg="red", font=("DejaVu Sans", 9))
     err_label.grid(row=2, column=0, columnspan=2, pady=(4, 0))
 
     def on_start():
@@ -200,7 +200,7 @@ def show_record_settings_dialog():
         result[0] = (RESOLUTION_OPTIONS[choice.get()], mn, mx)
         root.destroy()
 
-    tk.Button(root, text="Start Recording", width=16, font=("Helvetica", 11),
+    tk.Button(root, text="Start Recording", width=16, font=("DejaVu Sans", 11),
               command=on_start, bg="#2c5f2e", fg="white").pack(pady=14)
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)
@@ -219,32 +219,32 @@ def show_pose_settings_dialog():
     result = [None]
 
     root = tk.Tk()
-    root.title("Pose Settings")
+    root.title("ZED Pose Settings")
     root.resizable(False, False)
     _center_window(root, 580, 260)
 
-    tk.Label(root, text="Pose Settings", font=("Helvetica", 14, "bold")).pack(pady=(16, 10))
+    tk.Label(root, text="Pose Settings", font=("DejaVu Sans", 14, "bold")).pack(pady=(16, 10))
 
     panels = tk.Frame(root)
     panels.pack(padx=20, fill='x')
 
     # Left: resolution radio buttons
-    left = tk.LabelFrame(panels, text="Resolution", font=("Helvetica", 10, "bold"), padx=10, pady=8)
+    left = tk.LabelFrame(panels, text="Resolution", font=("DejaVu Sans", 10, "bold"), padx=10, pady=8)
     left.pack(side=tk.LEFT, fill='y', padx=(0, 10))
 
     res_choice = tk.IntVar(value=0)  # default: HD2K
     for i, (name, _, w, h, fps) in enumerate(RESOLUTION_OPTIONS):
         tk.Radiobutton(left, text=f"{name}   {w} x {h}  @  {fps} fps",
-                       variable=res_choice, value=i, font=("Helvetica", 10)).pack(anchor='w')
+                       variable=res_choice, value=i, font=("DejaVu Sans", 10)).pack(anchor='w')
 
     # Right: keypoint format radio buttons
-    right = tk.LabelFrame(panels, text="Keypoint Format", font=("Helvetica", 10, "bold"), padx=14, pady=8)
+    right = tk.LabelFrame(panels, text="Keypoint Format", font=("DejaVu Sans", 10, "bold"), padx=14, pady=8)
     right.pack(side=tk.LEFT, fill='both', expand=True)
 
     fmt_choice = tk.IntVar(value=0)  # default: BODY_18
     for i, (label, _, n_kp) in enumerate(BODY_FORMAT_OPTIONS):
         tk.Radiobutton(right, text=label, variable=fmt_choice, value=i,
-                       font=("Helvetica", 10)).pack(anchor='w', pady=4)
+                       font=("DejaVu Sans", 10)).pack(anchor='w', pady=4)
 
     def on_start():
         _, res_enum, _, _, _ = RESOLUTION_OPTIONS[res_choice.get()]
@@ -252,7 +252,7 @@ def show_pose_settings_dialog():
         result[0] = (res_enum, fmt_enum)
         root.destroy()
 
-    tk.Button(root, text="Start Pose Tracking", width=18, font=("Helvetica", 11),
+    tk.Button(root, text="Start Pose Tracking", width=18, font=("DejaVu Sans", 11),
               command=on_start, bg="#5a2d82", fg="white").pack(pady=14)
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)

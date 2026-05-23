@@ -10,9 +10,10 @@ Python application for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`)
 
 - Python **3.10** exactly (pinned in `pyproject.toml`)
 - Package manager: **uv** with a local `.venv`
-- `pyzed` is installed from the local wheel `pyzed-5.2-cp310-cp310-win_amd64.whl`
+- `pyzed` 5.3 is pulled from the Stereolabs CDN via `[tool.uv.sources]` in `pyproject.toml` — no local wheel file
+- ZED SDK 5.3 must be installed at the system level (`/usr/local/zed/`) before `uv sync`
 
-Install dependencies:
+Install dependencies (after system-level prerequisites are met):
 ```bash
 uv sync
 ```
@@ -55,7 +56,7 @@ ZED/
         record.py                # Pi: capture raw stereo video via UVC/V4L2 (no SDK/CUDA)
         process.py               # Desktop: rectify raw video into left/right PNG sequences
         calibration/
-          SN*.conf               # ZED calibration file (copy from ProgramData/Stereolabs/settings/)
+          SN*.conf               # ZED calibration file (copy from /usr/local/zed/settings/)
         recordings/              # raw recordings land here
           raw_stereo_<timestamp>.mp4   # default (lossy)
           raw_stereo_<timestamp>.mkv   # lossless (pass 'mkv' argument)
@@ -155,7 +156,9 @@ Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi 4.
 - CLI: `python process.py <video_file> [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
 - Accepts both `.mp4` and `.mkv` input.
 - Calibration file is auto-detected from `raspberry_pi/calibration/`. Copy it from:
-  `C:\ProgramData\Stereolabs\settings\SN<serial>.conf` (requires ZED SDK installed on Windows).
+  - Windows: `C:\ProgramData\Stereolabs\settings\SN<serial>.conf`
+  - Linux: `/usr/local/zed/settings/SN<serial>.conf`
+  (requires ZED SDK installed on the desktop machine)
 - Outputs PNG sequences: `<stem>_extracted_<suffix>/left_rectified/` and `right_rectified/`.
 - Rectified frames match the quality of `sl.VIEW.LEFT` / `sl.VIEW.RIGHT` from the SDK
   (same calibration math; HFYU MKV intermediate is lossless so no pixel degradation).
@@ -198,9 +201,40 @@ frames are missing -- the recording is shorter than real time. Options:
   fps header after recording with `ffmpeg -r <actual_fps> -i input.mp4 -c copy output.mp4`.
 
 ### Video output convention
-All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.2, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out.
+All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.3, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out.
 
 `software/tools/video.py` records full stereo as a single `stereo_<timestamp>.svo2` file using the ZED SDK's built-in SVO recorder (`zed.enable_recording`). SVO2 stores raw sensor data; left/right rectified views are reconstructed on playback through the SDK. Compression is selectable at launch: H264 lossy (default), H265 lossy, or Lossless.
+
+### Linux-specific notes
+
+- ZED SDK installs to `/usr/local/zed/`. Libraries are registered via `/etc/ld.so.conf.d/001-zed.conf`.
+- CUDA toolkit installs to `/usr/local/cuda/` (standard Ubuntu path). `PATH` and `LD_LIBRARY_PATH` must include `/usr/local/cuda/bin` and `/usr/local/cuda/lib64`.
+- tkinter dialogs use font `"DejaVu Sans"` (not `"Helvetica"`) for Linux compatibility. `"Helvetica"` does not exist on Linux; `ttf-dejavu` (Ubuntu: `fonts-dejavu`) must be installed.
+- All dialog window titles are prefixed with `"ZED"` — required so window manager rules can match and float/center them.
+- OpenCV live view windows are sized `1280x360` (not 1920x540) to fit within a single monitor on multi-monitor setups.
+- The folder picker (`filedialog.askdirectory`) requires a **single click** to select a recording subfolder — double-clicking navigates into it rather than selecting it.
+- Calibration file for the Pi pipeline is at `/usr/local/zed/settings/SN<serial>.conf` after the SDK is installed.
+
+#### Arch Linux (current user setup)
+
+The current user runs Arch Linux with Hyprland. Notes that differ from the Ubuntu baseline:
+
+- CUDA installs to `/opt/cuda/` (not `/usr/local/cuda/`). Before installing the ZED SDK, symlink it: `sudo ln -s /opt/cuda /usr/local/cuda`. Also create `/usr/lib/x86_64-linux-gnu/` (Ubuntu-specific path the installer expects) and add it to ldconfig.
+- Shell env (`~/.bashrc`): `PATH=/opt/cuda/bin:$PATH`, `LD_LIBRARY_PATH=/opt/cuda/lib64:$LD_LIBRARY_PATH`, `CUDA_HOME=/opt/cuda`.
+- ZED SDK installer will fail the `apt-get` step (expected on Arch — say `n` to system dependencies). Install missing libs manually: `yay -S openblas glew qt5-svg unzip python-pip python-setuptools`.
+- Python 3.10 must come from the AUR `python310` package (`yay -S tk python310`) — **not** uv's bundled Python. uv's bundled Python ships its own Tcl/Tk without fontconfig, causing tkinter to render bitmap fonts. The AUR package links against the system `tk` (8.6) which has proper font rendering. Create the venv explicitly:
+  ```bash
+  uv venv --python /usr/bin/python3.10
+  uv sync
+  ```
+- Hyprland window rules (Lua config) to float and center all ZED dialogs and OpenCV windows:
+  ```lua
+  windowrule = float, class:python3.10
+  windowrule = center, class:python3.10
+  windowrule = float, title:ZED.*
+  windowrule = center, title:ZED.*
+  ```
+  Use `float = true` (not `floating = true`; the latter is rejected by this version of Hyprland). All tkinter dialog titles are prefixed `"ZED"` specifically to match this rule.
 
 ### ZED SDK patterns
 - `sl.Camera` is the central object; always opened with `InitParameters` and closed with `zed.close()`.

@@ -38,7 +38,7 @@ def depth_record_mode(min_depth, max_depth, resolution):
     status_color = (200, 200, 200)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, 1920, 540)
+    cv2.resizeWindow(WINDOW_NAME, 1280, 360)
 
     runtime_params = sl.RuntimeParameters()
     runtime_params.confidence_threshold = 95

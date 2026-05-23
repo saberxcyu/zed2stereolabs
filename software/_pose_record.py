@@ -61,7 +61,7 @@ def pose_record_mode(resolution, body_format):
     status_color = (200, 200, 200)
 
     cv2.namedWindow(POSE_WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(POSE_WINDOW_NAME, 1920, 540)
+    cv2.resizeWindow(POSE_WINDOW_NAME, 1280, 360)
 
     exit_reason = 'back'
 

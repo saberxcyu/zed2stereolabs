@@ -1,8 +1,8 @@
-# WiSeR ZED2 Tool
+# ZED2 tools
 
 This repo contains some tools we built for using the ZED2 stereo camera from Stereolabs (for depth sensing & pose tracking). 
 The two major components within the repo include:
-- **Part 1: A software that runs on Windows**: 
+- **Part 1: A software that runs on Linux (Ubuntu 22)**: 
   1. we use the software to do depth sensing and pose tracking.
   2. venv is managed by uv. see pyproject.toml for more details.
   3. requires the ZED SDK and CUDA (+TensorRT to speed up inference).
@@ -23,28 +23,58 @@ Here is our setup with the Pi.
 
 ![Raspberry Pi Setup](assets/pi.png)
 
-## 1. Requirements
+## 1. Set Up
 
-### 1.1 Windows Desktop
-- Stereolabs ZED SDK 5.3.0 with CUDA 13.2 / TensorRT 10
+### 1.1 For Running the Software on Linux (Ubuntu 22)
+
+Requirements:
+- Ubuntu 22.04 LTS will be preferred (otherwise the SDK needs to be manually set up)
+- CUDA Toolkit 13.x (with an up-to-date driver)
+- ZED SDK 5.3.0 with TensorRT 10
 - Python 3.10
 - uv package manager
 
-### 1.2 Raspberry Pi
-- We used a Raspberry Pi 4
-- USB 3.0 ports for the camera
-- OpenCV 4.12.0
-- not managed with uv and not run with uv
+**Step 1. Install NVIDIA driver & CUDA Toolkit** (if not already installed).
 
----
+![CUDA Toolkit](assets/cudatoolkit.png)
+Side note: As you can see I did use arch linux here but to avoid all the hassles Ubuntu is recommended.
 
-## 2. Windows Desktop Pipeline 
 
-Setup with:
+**Step 2. Install ZED SDK** 
 
+Download the Ubuntu 22.04 / CUDA 13 / TensorRT 10 `.run` from [stereolabs.com](https://www.stereolabs.com/developers/release), follow the procedure on stereolabs website to install the SDK. 
+
+Launch the installer, at the prompts:
+- **System dependencies**: say `y` (the installer will use apt-get)
+- **TensorRT**: say `y` (the installation will prompt you to install TensorRT)
+- **Neural depth models**: say `y` (to get the models and have them optimized by TensorRT)
+- **Python API**: say `n` (handled by uv below)
+- **ZED Diagnostic / optimize all models**: say `n` (to save time, use the ZED Diagnostic application separately after the installer is done to update only selected models)
+
+**Step 3. Set up uv**:
+
+install uv with
+```
+curl -Ls https://astral.sh/uv/install.sh | sh
+```
+
+cd into project dircetory, then do 
 ```
 uv sync
 ```
+
+### 1.2 For Data Collection on Raspberry Pi
+- We used a Raspberry Pi 4
+- USB 3.0 ports for the camera
+- OpenCV 4.12.0
+- set up python environment and run as
+```
+python record.py 
+```
+(for more details, see below)
+---
+
+## 2. Software Pipeline
 
 To run the software:
 
@@ -136,14 +166,14 @@ SDK-free two-step workflow. More for data collection.
 
 ### 4.1 Prerequisites
 
-Copy the ZED calibration file from a machine with the ZED SDK installed:
+Copy the ZED calibration file from a machine at
 
 ```
-C:\ProgramData\Stereolabs\settings\SN<serial>.conf
+/usr/local/zed/settings/SN<serial>.conf
 ```
 
 Place it in `software/tools/raspberry_pi/calibration/`. The rectification calculation relies on this.
-The SDK places the .conf file there so the SDK needs to run at least once on desktop.
+The SDK places the .conf file there when it is run, so the SDK needs to run at least once for that file to exist.
 
 ### 4.2 Recording videoes on Pi
 
@@ -193,5 +223,4 @@ We separated the rectification from record.py to free up the PI for data collect
 ## 5 Use of AI
 
 The codebase is built together with Claude. 
-There is a CLAUDE.md file in the directory which contains some high level details of the implementation that AIs can refer to.
-
+There is a CLAUDE.md file in the directory which contains some additional low level details of the implementation.
