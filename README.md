@@ -2,7 +2,7 @@
 
 This repo contains some tools we built for using the ZED2 stereo camera from Stereolabs (for depth sensing & pose tracking). 
 The two major components within the repo include:
-- **Part 1: A software that runs on Linux (Ubuntu 22)**: 
+- **Part 1: A software that runs on Linux**: 
   1. we use the software to do depth sensing and pose tracking.
   2. venv is managed by uv. see pyproject.toml for more details.
   3. requires the ZED SDK and CUDA (+TensorRT to speed up inference).
@@ -22,14 +22,14 @@ See snapshots below to get a feeling of the software.
 Here is our setup with the Pi.
 
 ![Raspberry Pi Setup](assets/pi.png)
----
 
+---
 ## 1. Set Up
 
 ### 1.1 Setup for Running the Software on Linux (Ubuntu 22)
 
 Requirements:
-- Ubuntu 22.04 LTS will be preferred (otherwise the SDK needs to be manually set up)
+- Ubuntu 22.04 LTS (otherwise the SDK needs to be manually set up)
 - CUDA Toolkit 13.x (with an up-to-date driver)
 - ZED SDK 5.3.0 with TensorRT 10
 - Python 3.10
@@ -71,8 +71,8 @@ uv sync
 ```
 python record.py 
 ```
----
 
+---
 ## 2. Software Pipeline
 
 To run the software:
@@ -138,8 +138,8 @@ video panel shows orientation: X = right, Y = up, Z = into screen. Slider scrubs
 `[>]` plays. `q` or `[x]` to exit.
 
 ![Software - Pose Tracking](assets/pose_analyze.png)
----
 
+---
 ## 3. Stereo SVO recorder
 
 Records full stereo video in the ZED SDK's native SVO format.
@@ -160,7 +160,6 @@ Settings dialog: choose resolution and compression (H264 lossy default / H265 / 
 Saves to `software/tools/recordings/stereo_<timestamp>.svo2`.
 
 ---
-
 ## 4. Raspberry Pi Pipeline
 
 SDK-free two-step workflow. More for data collection.
@@ -220,8 +219,8 @@ We separated the rectification from record.py to free up the PI for data collect
     frame_000001.png
     ...
 ```
----
 
+---
 ## 5 Use of AI
 
 The codebase is built together with Claude. 
