@@ -1,0 +1,9 @@
+[project]
+name = "zed-capture"
+version = "0.1.0"
+description = "ZED stereo data collection (SDK-free, UVC/V4L2)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]

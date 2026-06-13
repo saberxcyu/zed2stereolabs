@@ -9,9 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
-# Video recodings
+# Video recordings
 software/recordings/
-software/tools/recordings
+software/tools/recordings/
+raspberry_pi/recordings/
 
 
 # whl files

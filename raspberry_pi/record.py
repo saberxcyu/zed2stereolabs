@@ -12,17 +12,19 @@ import cv2
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
 
-MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free (covers ~25 s of HD2K HFYU)
+MIN_FREE_SPACE      = 2_000_000_000   # bytes - stop if < 2 GB free
 DISK_CHECK_INTERVAL = 30.0            # seconds between disk-space checks
 WARMUP_SECONDS      = 2.0             # discard frames while camera auto-exposure converges
 
 # (name, per-eye width, per-eye height, fps)
 # UVC composite width = per-eye width * 2 (left|right side-by-side)
+# fps caps reflect what in-process mp4v (OpenCV VideoWriter) can sustain at each resolution.
+# Pi 5 caps are lower: HD2K=7.5, HD1080=10, HD720=15, VGA=30.
 RESOLUTION_OPTIONS = [
-    ("HD2K",   2208, 1242,  7.5),
-    ("HD1080", 1920, 1080, 10  ),
-    ("HD720",  1280,  720, 15  ),
-    ("VGA",     672,  376, 30  ),
+    ("HD2K",   2208, 1242, 10),
+    ("HD1080", 1920, 1080, 12),
+    ("HD720",  1280,  720, 30),
+    ("VGA",     672,  376, 30),
 ]
 
 # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ class ThreadedCameraUVC:
 
         self.actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
 
-        # 8 frames at HD2K = ~131 MB - safe headroom without OOM risk
+        # 8 frames at HD2K BGR = ~131 MB - safe headroom without OOM risk
         self.frame_queue = queue.Queue(maxsize=8)
         self.running = False
         self.thread  = None
@@ -92,7 +94,7 @@ class ThreadedCameraUVC:
 # Recording pipeline
 # ---------------------------------------------------------------------------
 
-def run_raw_processor(resolution_option, use_mkv=False):
+def run_raw_processor(resolution_option):
     name, eye_w, eye_h, fps = resolution_option
     composite_w = eye_w * 2
 
@@ -106,11 +108,6 @@ def run_raw_processor(resolution_option, use_mkv=False):
         print("[Error] Failed to open camera.")
         return
 
-    if use_mkv:
-        ext, fourcc_str, info = '.mkv', 'HFYU', 'MKV/HFYU lossless'
-    else:
-        ext, fourcc_str, info = '.mp4', 'mp4v', 'MP4/mp4v lossy'
-
     print(f"[Warmup]    {WARMUP_SECONDS:.0f}s (letting camera stabilize)...")
     time.sleep(WARMUP_SECONDS)
     while True:
@@ -120,18 +117,16 @@ def run_raw_processor(resolution_option, use_mkv=False):
             break
 
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}{ext}")
-    actual_fps = float(fps)
-    print(f"[Info]      {info} - no file size limit. Stops if < 2 GB free.")
+    video_path = os.path.join(TOOLS_RECORDING_DIR, f"raw_stereo_{ts}.mp4")
+    print(f"[Info]      MP4/mp4v (OpenCV VideoWriter) - stops if < 2 GB free.")
 
     writer = cv2.VideoWriter(
         video_path,
-        cv2.VideoWriter_fourcc(*fourcc_str),
-        actual_fps,
+        cv2.VideoWriter_fourcc(*'mp4v'),
+        fps,
         (composite_w, eye_h),
         True,
     )
-
     if not writer.isOpened():
         print("[Error] VideoWriter failed to open. Check codec availability and disk space.")
         cam_stream.stop()
@@ -142,7 +137,7 @@ def run_raw_processor(resolution_option, use_mkv=False):
 
     keep_running = True
 
-    def signal_handler(sig, frame):
+    def signal_handler(sig, _frame):
         nonlocal keep_running
         print("\n[Stopping]  Saving recording...")
         keep_running = False
@@ -151,7 +146,7 @@ def run_raw_processor(resolution_option, use_mkv=False):
     signal.signal(signal.SIGTERM, signal_handler)
 
     written     = [0]
-    write_queue = queue.Queue(maxsize=16)   # ~1s buffer at HD2K 15fps
+    write_queue = queue.Queue(maxsize=16)
 
     def enqueue_frame(f):
         if not write_queue.full():
@@ -216,7 +211,7 @@ def run_raw_processor(resolution_option, use_mkv=False):
         print(f"[Saved]     {size_mb:.1f} MB -> {video_path}")
         print(f"[Stats]     {written[0]} frames  {duration:.1f}s  {actual_fps:.1f} fps  (target {fps} fps)")
         if written[0] > 0 and actual_fps < fps * 0.95:
-            print(f"[Warning]   Write rate {actual_fps:.1f} fps below target {fps} fps. Video may be sped up.")
+            print(f"[Warning]   Write rate {actual_fps:.1f} fps below target {fps} fps.")
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -225,21 +220,18 @@ def run_raw_processor(resolution_option, use_mkv=False):
 def main():
     options    = {name: (name, w, h, fps) for name, w, h, fps in RESOLUTION_OPTIONS}
     argv_lower = [a.lower() for a in sys.argv[1:]]
-    use_mkv    = 'mkv' in argv_lower
-    res_args   = [a.upper() for a in argv_lower if a != 'mkv']
+    res_args   = [a.upper() for a in argv_lower]
 
     unknown = [a for a in res_args if a not in options]
     if unknown:
         print(f"[Error] Unknown argument(s): {', '.join(unknown)}")
         print(f"        Resolution options: {', '.join(options)}")
-        print(f"        Format options: mkv (default: mp4)")
         return
 
     res_name = res_args[0] if res_args else 'HD2K'
     name, w, h, fps = options[res_name]
-    fmt = 'MKV lossless' if use_mkv else 'MP4 lossy'
-    print(f"[Config]    Resolution: {name}  ({w * 2} x {h} composite @ {fps} fps)  Format: {fmt}")
-    run_raw_processor(options[res_name], use_mkv=use_mkv)
+    print(f"[Config]    Resolution: {name}  ({w * 2} x {h} composite @ {fps} fps)  Format: MP4/mp4v")
+    run_raw_processor(options[res_name])
 
 
 if __name__ == "__main__":

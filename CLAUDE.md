@@ -15,6 +15,7 @@ Python application for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`)
 
 Install dependencies (after system-level prerequisites are met):
 ```bash
+cd software
 uv sync
 ```
 
@@ -33,15 +34,18 @@ A 2x2 mode selection window appears first (Depth row / Pose row, each with Recor
 ## Directory Structure
 
 ```
-ZED/
-  software/
-    software.py         # entry point: mode dialog + dispatch (~50 lines)
-    _common.py          # shared imports, constants, and helper functions
-    _depth_record.py    # depth_record_mode(): live depth recording
-    _depth_analyze.py   # depth_analyze_mode(): depth analysis viewer
-    _pose_record.py     # pose_record_mode(): live pose/skeleton recording
-    _pose_analyze.py    # pose_analyze_mode(): pose trajectory analysis viewer
-    recordings/         # all recordings land here (created automatically)
+zed2stereolabs/
+  software/                      # Part 1: ZED SDK pipeline (laptop / x86_64)
+    pyproject.toml               # uv project (pyzed, opencv, matplotlib, ...)
+    uv.lock
+    .python-version              # pins Python 3.10
+    software.py                  # entry point: mode dialog + dispatch (~50 lines)
+    _common.py                   # shared imports, constants, and helper functions
+    _depth_record.py             # depth_record_mode(): live depth recording
+    _depth_analyze.py            # depth_analyze_mode(): depth analysis viewer
+    _pose_record.py              # pose_record_mode(): live pose/skeleton recording
+    _pose_analyze.py             # pose_analyze_mode(): pose trajectory analysis viewer
+    recordings/                  # all recordings land here (created automatically)
       depth_<timestamp>/
         video.mp4
         depth.npz
@@ -52,24 +56,26 @@ ZED/
       video.py                   # stereo SVO recording via ZED SDK (requires pyzed)
       recordings/                # SVO recordings land here
         stereo_<timestamp>.svo2
-      raspberry_pi/              # SDK-free pipeline for Raspberry Pi 4 data collection
-        record.py                # Pi: capture raw stereo video via UVC/V4L2 (no SDK/CUDA)
-        process.py               # Desktop: rectify raw video into left/right PNG sequences
-        calibration/
-          SN*.conf               # ZED calibration file (copy from /usr/local/zed/settings/)
-        recordings/              # raw recordings land here
-          raw_stereo_<timestamp>.mp4   # default (lossy)
-          raw_stereo_<timestamp>.mkv   # lossless (pass 'mkv' argument)
-          raw_stereo_<timestamp>_extracted_<suffix>/
-            left_rectified/
-              frame_000000.png
-              ...
-            right_rectified/
-              frame_000000.png
-              ...
-  .venv/
-  pyproject.toml
+  raspberry_pi/                  # Part 2: SDK-free data collection (Jetson / Pi)
+    pyproject.toml               # uv project (opencv-python, numpy)
+    uv.lock
+    record.py                    # capture raw stereo video via UVC/V4L2 (no SDK/CUDA)
+    process.py                   # rectify raw video into left/right PNG sequences
+    calibration/
+      SN*.conf                   # ZED calibration file (copy from /usr/local/zed/settings/)
+    recordings/                  # raw recordings land here
+      raw_stereo_<timestamp>.mp4       # default (lossy)
+      raw_stereo_<timestamp>.mkv       # lossless (pass 'mkv' argument)
+      raw_stereo_<timestamp>_extracted_<suffix>/
+        left_rectified/
+          frame_000000.png
+          ...
+        right_rectified/
+          frame_000000.png
+          ...
   CLAUDE.md
+  README.md
+  .gitignore
 ```
 
 ## Architecture
@@ -117,51 +123,41 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 - A red dashed vertical line tracks the current frame position on the chart as the slider is dragged.
 - Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
 
-### Raspberry Pi pipeline
+### Raspberry Pi / Jetson pipeline
 
-Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi 4.
+Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi or Jetson.
 
-**Step 1 - `record.py` (runs on Pi):**
+**Step 1 - `record.py`:**
 - Treats the ZED camera as a standard UVC device via V4L2 -- no ZED SDK or CUDA needed.
 - ZED outputs a composite side-by-side frame at double width (left|right) over USB 3.0.
-- Default: MP4/mp4v lossy. Pass `mkv` argument for MKV/HFYU lossless (no pixel degradation).
-  FFV1 was tried but is excluded from the custom FFmpeg build bundled with the OpenCV aarch64 wheel; HFYU is universally compiled in.
-- CLI: `python record.py [HD2K|HD1080|HD720|VGA] [mkv]` -- defaults to HD2K MP4.
-- Ctrl+C stops recording; the capture queue and write queue are both drained before the file
-  is finalized.
-- Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.mp4` (or `.mkv`).
-- Uses a dedicated writer thread (`write_loop`) decoupled from the capture loop via a 16-frame
-  `write_queue`. Disk writes never stall frame capture. If average write throughput falls below
-  capture fps, the oldest queued frame is dropped at the queue boundary. VideoWriter fps is set
-  to the same value as the capture fps, so the header is always correct.
-- Prints `[Stats]` on stop: frames written, elapsed time, actual fps. If actual fps < 95% of
-  target, a `[Warning]` is printed -- confirming whether the disk kept up.
-- **Fps values are capped below native camera fps** to stay within the Pi 4's sustained disk
-  write throughput (~44 M pixels/sec budget, derived from the observed HD2K write ceiling of
-  ~12 fps with 30-40% thermal headroom). Thermal throttling (CPU drops from 1.5GHz to 600MHz
-  above ~80C) can reduce throughput further during long sessions, which is why the budget is
-  conservative:
-  ```
-  HD2K   7.5 fps  (native 15 fps; 8 not achievable via integer frame-skip -- 15/8
-                   is not an integer; rate-limiter locks to 15/2 = 7.5)
-  FHD   10.0 fps  (native 30 fps; exact -- 30/10 = 3)
-  HD    15.0 fps  (native 30 fps; 20 not achievable -- 30/20 = 1.5 is not an integer;
-                   rate-limiter locks to 30/2 = 15)
-  VGA   30.0 fps  (native 30 fps; no cap needed)
-  ```
+- Always records MP4/mp4v via OpenCV VideoWriter — no external dependencies.
+- CLI: `uv run record.py [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
+- Ctrl+C stops recording; the capture queue and write queue are both drained before the
+  file is finalized.
+- Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.mp4`.
+- Uses a dedicated writer thread (`write_loop`) decoupled from the capture loop via a
+  16-frame `write_queue`. Encoding never stalls frame capture. If encoding falls behind,
+  the oldest queued frame is dropped. VideoWriter fps is set to the declared target fps,
+  so playback speed is always correct regardless of actual write rate.
+- Prints `[Stats]` on stop: frames written, elapsed time, actual fps. If actual fps < 95%
+  of target, a `[Warning]` is printed.
+- **Fps values in `RESOLUTION_OPTIONS`** are currently set for Jetson (mp4v encoder caps):
+  HD2K=10, HD1080=12, HD720=30, VGA=30.
+  When switching to Pi 5 (software encoding bottleneck), lower the caps:
+  HD2K=7.5, HD1080=10, HD720=15, VGA=30.
 
-**Step 2 - `process.py` (runs on desktop/laptop):**
+**Step 2 - `process.py`:**
 - Splits each composite frame into left and right halves, then applies stereo rectification
   using the ZED calibration parameters from `calibration/SN*.conf`.
-- CLI: `python process.py <video_file> [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
-- Accepts both `.mp4` and `.mkv` input.
+- CLI: `uv run process.py <video_file> [HD2K|HD1080|HD720|VGA]` -- defaults to HD2K.
+- Accepts `.mp4` input.
 - Calibration file is auto-detected from `raspberry_pi/calibration/`. Copy it from:
   - Windows: `C:\ProgramData\Stereolabs\settings\SN<serial>.conf`
   - Linux: `/usr/local/zed/settings/SN<serial>.conf`
   (requires ZED SDK installed on the desktop machine)
 - Outputs PNG sequences: `<stem>_extracted_<suffix>/left_rectified/` and `right_rectified/`.
 - Rectified frames match the quality of `sl.VIEW.LEFT` / `sl.VIEW.RIGHT` from the SDK
-  (same calibration math; HFYU MKV intermediate is lossless so no pixel degradation).
+  (same calibration math).
 
 ### Stereo frame rate and write throughput
 
@@ -181,24 +177,46 @@ frame (left + right) doubled per-iteration encode overhead, pushing the loop pas
 period. Switching to ZED SDK SVO recording (`zed.enable_recording`) fixes this: the SDK
 records in a separate internal thread and feeds at camera_fps regardless of Python loop speed.
 
-**`record.py` (Pi) now uses a threaded writer:** `writer.write()` runs in a dedicated thread
-decoupled from the main capture loop via a 16-frame write queue. Disk I/O can no longer slow
-down capture. If average write throughput falls below camera_fps, the write queue fills and
-drops the oldest frame -- actual written fps falls -- but this does not cause sped-up playback
-because VideoWriter fps is always set to nominal camera_fps. The `[Stats]` print on stop
-reports actual fps, confirming whether any drops occurred.
+**`record.py` uses a threaded writer:** encoding runs in a dedicated thread decoupled from
+the main capture loop via a 16-frame write queue. Encoding never stalls frame capture. If
+encoding falls behind, the write queue fills and drops the oldest frame -- actual written
+fps falls -- but this does not cause sped-up playback because VideoWriter fps is set to
+the declared target at init time regardless of actual write rate. The `[Stats]`
+print on stop reports actual fps, confirming whether any drops occurred.
 
 ### If record.py write queue drops frames
 
-If `[Stats]` reports actual fps significantly below target (e.g. 10fps at HD2K), the Pi disk
-cannot sustain the write rate. Playback speed is correct (VideoWriter fps = nominal), but
-frames are missing -- the recording is shorter than real time. Options:
+If `[Stats]` reports actual fps significantly below target, the encoder cannot sustain the
+write rate. Playback speed is correct (VideoWriter fps = declared target), but frames
+are missing -- the recording is shorter than real time. Lower the fps cap in
+`RESOLUTION_OPTIONS` for the affected resolution until actual fps meets target.
 
-- **Option B - Measured fps:** write N calibration frames to a temp VideoWriter, time the
-  actual write overhead, use measured_fps for the real VideoWriter. Recording duration is
-  accurate even when write rate < camera_fps, at the cost of discarding the first N frames.
-- **Option C - Post-process remux:** track frame count and wall-clock duration, then fix the
-  fps header after recording with `ffmpeg -r <actual_fps> -i input.mp4 -c copy output.mp4`.
+### Encoding approaches tried and abandoned (record.py)
+
+**GStreamer + nvjpegenc (Jetson hardware JPEG encoder) — abandoned 2026-06-13**
+
+We attempted to replace OpenCV VideoWriter with a GStreamer pipeline piping BGR frames into
+the Jetson hardware JPEG encoder (`nvjpegenc`) to write motion JPEG video. Summary of what
+we learned and why it was dropped:
+
+- `rawvideoparse` format values are **lowercase** (`i420`, not `I420`). Passing uppercase
+  silently fails with "could not set property 'format'".
+- `nvjpegenc` has two sink pad paths:
+  - `video/x-raw(memory:NVMM)` — GPU memory path (fast, hardware). Requires frames already
+    in NVMM memory (e.g. from `nvvideoconvert`).
+  - `video/x-raw` — system RAM path. Only accepts `I420`, `YV12`, `GRAY8`. **Does not
+    accept NV12 from system RAM.**
+- `nvvideoconvert` (which bridges system RAM → NVMM) is **not installed** on this Jetson
+  with JetPack 7 / `nvidia-l4t-gstreamer`. `gst-inspect-1.0 nvvideoconvert` returns
+  "No such element".
+- Even on the system RAM path (BGR → I420 → nvjpegenc), HD2K achieved ~14fps but HD1080
+  consistently achieved only ~8.5fps. All individual components benchmarked fine in
+  isolation (encoder: 41fps at HD2K, 53fps at HD1080 via `videotestsrc`; BGR→I420
+  conversion: >1000fps). Root cause of HD1080 bottleneck was never identified — the
+  GStSystemClock was observed to run "way slower" during HD1080 recording sessions, but
+  why the pipeline scheduling was different at that resolution is unknown.
+- **Decision:** reverted to `mp4v` via OpenCV VideoWriter. All four resolutions work
+  correctly and the simpler code is more maintainable.
 
 ### Video output convention
 All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.3, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out.
@@ -224,6 +242,7 @@ The current user runs Arch Linux with Hyprland. Notes that differ from the Ubunt
 - ZED SDK installer will fail the `apt-get` step (expected on Arch — say `n` to system dependencies). Install missing libs manually: `yay -S openblas glew qt5-svg unzip python-pip python-setuptools`.
 - Python 3.10 must come from the AUR `python310` package (`yay -S tk python310`) — **not** uv's bundled Python. uv's bundled Python ships its own Tcl/Tk without fontconfig, causing tkinter to render bitmap fonts. The AUR package links against the system `tk` (8.6) which has proper font rendering. Create the venv explicitly:
   ```bash
+  cd software
   uv venv --python /usr/bin/python3.10
   uv sync
   ```

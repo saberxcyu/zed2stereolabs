@@ -58,18 +58,21 @@ install uv with
 curl -Ls https://astral.sh/uv/install.sh | sh
 ```
 
-cd into project dircetory, then do 
+cd into the `software` directory, then do
 ```
+cd software
 uv sync
 ```
 
-### 1.2 Setup for Collecting Data on Raspberry Pi
-- We used a Raspberry Pi 5 (Model B Rev 1.1)
+### 1.2 Setup for Collecting Data on Raspberry Pi (or Jetson)
+- Raspberry Pi 5 (Model B Rev 1.1) or Jetson Orin Nano
 - USB 3.0 ports for the camera
-- OpenCV 4.12.0
-- set up python environment and run as (for more details on how to run see section 4)
+- uv package manager (install with `curl -Ls https://astral.sh/uv/install.sh | sh`)
+- run as (for more details see section 4)
 ```
-python record.py 
+cd raspberry_pi
+uv sync
+uv run record.py
 ```
 
 ---
@@ -172,40 +175,43 @@ Copy the ZED calibration file from a machine at
 /usr/local/zed/settings/SN<serial>.conf
 ```
 
-Place it in `software/tools/raspberry_pi/calibration/`. The rectification calculation relies on this.
+Place it in `raspberry_pi/calibration/`. The rectification calculation relies on this.
 The SDK places the .conf file there when it is run, so the SDK needs to run at least once for that file to exist.
 
-### 4.2 Recording videoes on Pi
+### 4.2 Recording videoes on Pi / Jetson
 
 ```
-python record.py [HD2K|HD1080|HD720|VGA] [mkv]
+cd raspberry_pi
+uv run record.py [HD2K|HD1080|HD720|VGA]
 ```
 
-Defaults to HD2K MP4 (lossy). Pass `mkv` for lossless capture (larger files, no quality
-loss). Press Ctrl+C to stop; the recording is finalized and stats are printed.
+Defaults to HD2K. Press Ctrl+C to stop; the recording is finalized and stats are printed.
 
-Saves to `software/tools/raspberry_pi/recordings/raw_stereo_<timestamp>.mp4` (or `.mkv`).
+Saves to `raspberry_pi/recordings/raw_stereo_<timestamp>.mp4`.
 
-Recorded frame rates (capped for throughput, video encoding can't catch up on CPU):
+Encoding uses `mp4v` via OpenCV VideoWriter.
 
-| Resolution | Composite size | Recorded fps |
-|------------|----------------|-------------|
-| HD2K | 4416 x 1242 | 7.5 |
-| FHD | 3840 x 1080 | 10 |
-| HD | 2560 x 720 | 15 |
-| VGA | 1344 x 376 | 30 |
+Recorded frame rates (capped for encoder throughput):
 
-The ZED can do 15 FPS at HD2K, 30 FPS at other resolutions, but the PI cannot keep up with writing the videoes. 
-Therefore, here we hardcoded some somewhat conservative limits to the FPS for the Raspberry PI. We have tested these on our PI and confirmed the PI worked OK. 
-Pi 5 has no dedicated h.264 hardware encoder.
+| Resolution | Composite size | Jetson fps | Pi fps |
+|------------|----------------|------------|--------|
+| HD2K | 4416 x 1242 | 10 | 7.5 |
+| FHD | 3840 x 1080 | 12 | 10 |
+| HD | 2560 x 720 | 30 | 15 |
+| VGA | 1344 x 376 | 30 | 30 |
+
+Pi fps is lower because software mp4v encoding cannot keep up at native rates.
+The fps caps in `RESOLUTION_OPTIONS` inside `record.py` are currently set for Jetson.
+When switching to Pi, update those values to the Pi fps column above.
 
 ### 4.3 Rectify on Pi or elsewhere
 
 ```
-python process.py <video_file_path> [HD2K|HD1080|HD720|VGA]
+cd raspberry_pi
+uv run process.py <video_file_path> [HD2K|HD1080|HD720|VGA]
 ```
 
-Need to pass the right resolution (from the video) to the argument, but can process both mp4 and mkv files.
+Need to pass the right resolution (from the video) to the argument.
 Defaults to HD2K if resolution is not specified. 
 We separated the rectification from record.py to free up the PI for data collection.
 
