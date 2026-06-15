@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python application for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`). Functionality is split across `software/` modules: `software.py` is the entry point that dispatches to four independent mode modules (`_depth_record`, `_depth_analyze`, `_pose_record`, `_pose_analyze`), with shared code in `_common.py`.
+Python application for Stereolabs ZED stereo cameras using the ZED SDK (`pyzed`). Functionality is split across `software/` modules: `software.py` is the entry point that dispatches to six independent mode modules (`_depth_record`, `_depth_analyze`, `_pose_record`, `_pose_analyze`, `_pc_record`, `_pc_analyze`), with shared code in `_common.py`.
 
 ## Environment Setup
 
@@ -25,11 +25,13 @@ uv sync
 cd software
 uv run software.py
 ```
-A 2x2 mode selection window appears first (Depth row / Pose row, each with Record and Analyze):
+A 3×2 mode selection window appears first (Depth / Pose / Point Cloud rows, each with Record and Analyze):
 - **Depth > Record**: recording settings dialog (resolution left, depth range right; HD2K and 0.5/1.5 m defaults) -> live RGB+depth view. Press `s` to start/stop recording, `q` to return to the mode menu, or close [x] to exit. Saves `recordings/depth_<timestamp>/video.mp4` (left sensor rectified frames only) and `depth.npz`.
 - **Depth > Analyze**: folder picker (opens to `recordings/`) -> loads `video.mp4` + `depth.npz` -> matplotlib viewer. Click or drag a region to plot depth over time. Slider scrubs frames, `[>]` plays. `q` or close [x] controls navigation.
 - **Pose > Record**: pose settings dialog (resolution left, keypoint format BODY_18/34/38 right; HD2K and BODY_18 defaults) -> live side-by-side view (raw RGB left, skeleton overlay right). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pose_<timestamp>/video.mp4` (left sensor rectified frames only) and `pose.npz`.
 - **Pose > Analyze**: folder picker (opens to `recordings/`) -> loads `pose.npz` + `video.mp4` -> matplotlib viewer. Select a keypoint from radio buttons to plot its X, Y, Z position in meters over time; axis colors match the on-screen coordinate gizmo (red=X, green=Y, blue=Z). Left panel shows video with skeleton overlay and coordinate axes gizmo. Slider scrubs frames, `[>]` plays. `q` returns to menu, [x] exits.
+- **Point Cloud > Record**: PC settings dialog (resolution left, depth range in metres right; HD2K and 0.5/2.0 m defaults) -> live RGB+depth view (same as depth record). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pc_<timestamp>/pc.npz` (per-pixel XYZRGB point clouds, no video file).
+- **Point Cloud > Analyze**: folder picker -> loads `pc.npz` -> Open3D interactive 3D viewer. Points colored by depth using `jet_r` (red=near, blue=far). Space=play/pause, ←/→=step frames, Q=back to menu. Frame/time/point-count printed to terminal inline.
 
 ## Directory Structure
 
@@ -39,12 +41,14 @@ zed2stereolabs/
     pyproject.toml               # uv project (pyzed, opencv, matplotlib, ...)
     uv.lock
     .python-version              # pins Python 3.10
-    software.py                  # entry point: mode dialog + dispatch (~50 lines)
+    software.py                  # entry point: mode dialog + dispatch (~90 lines)
     _common.py                   # shared imports, constants, and helper functions
     _depth_record.py             # depth_record_mode(): live depth recording
     _depth_analyze.py            # depth_analyze_mode(): depth analysis viewer
     _pose_record.py              # pose_record_mode(): live pose/skeleton recording
     _pose_analyze.py             # pose_analyze_mode(): pose trajectory analysis viewer
+    _pc_record.py                # pc_record_mode(): live per-pixel point cloud recording
+    _pc_analyze.py               # pc_analyze_mode(): Open3D point cloud clip viewer
     recordings/                  # all recordings land here (created automatically)
       depth_<timestamp>/
         video.mp4
@@ -52,10 +56,15 @@ zed2stereolabs/
       pose_<timestamp>/
         video.mp4
         pose.npz
+      pc_<timestamp>/
+        pc.npz
     tools/
       video.py                   # stereo SVO recording via ZED SDK (requires pyzed)
       recordings/                # SVO recordings land here
         stereo_<timestamp>.svo2
+      get_pc/
+        get_pc.py                # standalone live point cloud viewer (ogl_viewer + PLY save)
+        view_pc.py               # Open3D viewer for saved PLY files (file picker)
   raspberry_pi/                  # Part 2: SDK-free data collection (Jetson / Pi)
     pyproject.toml               # uv project (opencv-python, numpy)
     uv.lock
@@ -81,10 +90,11 @@ zed2stereolabs/
 ## Architecture
 
 ### Software pipeline
-`software.py` is a thin entry point (~50 lines) that shows the mode dialog and dispatches to four mode modules. All shared code (imports, constants, helpers, dialogs) lives in `_common.py`; each mode is self-contained in its own module. UI framework boundary:
+`software.py` is a thin entry point (~90 lines) that shows the mode dialog and dispatches to six mode modules. All shared code (imports, constants, helpers, dialogs) lives in `_common.py`; each mode is self-contained in its own module. UI framework boundary:
 - **tkinter**: all pre-capture dialogs (mode selection, resolution picker, depth range, folder picker)
-- **OpenCV**: live capture window only (side-by-side RGB + depth or skeleton during recording)
-- **matplotlib**: analysis viewer only (frame panel, plot, frame slider)
+- **OpenCV**: live capture window only (side-by-side RGB + depth or skeleton during recording; also the live display in pc_record)
+- **matplotlib**: depth/pose analysis viewers (frame panel, plot, frame slider)
+- **Open3D** (`VisualizerWithKeyCallback`): point cloud analysis viewer only. Must use `VisualizerWithKeyCallback` — the Open3D GUI module (Filament backend) hangs on Hyprland/XWayland and is not usable here.
 
 Recording output directory is always `software/recordings/`, defined as:
 ```python
@@ -122,6 +132,78 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 - Select a keypoint from radio buttons -> plots X (red), Y (green), Z (blue) position in meters over time, with colors matching the coordinate axes gizmo drawn on the video frame. Reveals lateral drift, vertical travel, or unexpected depth motion.
 - A red dashed vertical line tracks the current frame position on the chart as the slider is dragged.
 - Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
+
+**Point Cloud record mode** (`pc_record_mode` in `_pc_record.py`): records per-pixel XYZRGB point cloud clips:
+- Uses `sl.MEASURE.XYZRGBA` — same NEURAL depth network as depth mode, different output format.
+- `coordinate_system=sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP`, `coordinate_units=sl.UNIT.METER`. Forward objects have **negative Z** in this coordinate system.
+- Live display: same RGB + colorized depth side-by-side view as depth record mode (`normalize_depth_to_colormap`).
+- Color unpacking from `MEASURE.XYZRGBA`: RGBA packed into float32 bits; R = bits 0–7, G = bits 8–15, B = bits 16–23 of the reinterpreted uint32. This is **not** BGR like OpenCV images.
+- Depth filter uses negated thresholds: `xyz[:,2] <= -depth_min` and `xyz[:,2] >= -depth_max`.
+- `pc.npz` schema — unorganized flat array (variable point count per frame):
+  - `points`       (total_N, 6) float32 — XYZRGB; XYZ in metres, RGB normalized to [0,1]
+  - `frame_counts` (T,) int32           — number of valid points per frame
+  - `timestamps`   (T,) float64         — seconds since recording start
+  - `depth_min`    scalar float32       — minimum depth used during recording (metres)
+  - `depth_max`    scalar float32       — maximum depth used during recording (metres)
+  - Frame i reconstruction: `pts = points[offsets[i]:offsets[i+1]]` where `offsets = cumsum(frame_counts)`.
+- No video file is saved — only `pc.npz`. All point data accumulates in RAM and is flushed on stop.
+
+**Point Cloud analyze mode** (`pc_analyze_mode` in `_pc_analyze.py`): Open3D clip viewer for pc.npz recordings:
+- Uses `o3d.visualization.VisualizerWithKeyCallback` (GLFW + OpenGL). The Open3D GUI/Filament module (`open3d.visualization.gui`) hangs on Hyprland/XWayland and must not be used.
+- Points are colored by depth using `jet_r` (red=near, blue=far); stored RGB channels are ignored. Color mapping: `t = clip((-z - depth_min) / (depth_max - depth_min), 0, 1)`, then `jet_r(t)`.
+- `WAYLAND_DISPLAY` is unset and `DISPLAY=:0` is set before importing `open3d` (lazy import inside the function so it does not affect other modes at startup).
+- Controls: Space=play/pause, ←=step back, →=step forward, Q=back to menu, [X]=quit.
+- Playback speed derived from recorded `timestamps` differences, looping at end.
+- Frame/time/point-count printed to terminal inline (`\r` overwrite) as frames advance.
+
+### `_common.py` additions and fixes
+
+**`show_mode_dialog()`** extended to a 3×2 grid (window height 280→360):
+- Added a third `LabelFrame` row: **"Point Cloud"** with `pc_record` (dark green `#1a5c3a`) and `pc_analyze` (dark brown `#5c3a1a`) buttons.
+- Returns `'pc_record'` or `'pc_analyze'` in addition to the existing return values.
+
+**`show_pc_settings_dialog()`** (new): two-column dialog mirroring `show_record_settings_dialog`:
+- Left column: resolution radio buttons (reuses `RESOLUTION_OPTIONS`).
+- Right column: Min depth (m) and Max depth (m) entries, defaulting to 0.5 and 2.0.
+- Returns `(resolution_enum, depth_min_m, depth_max_m)` or `None` if cancelled.
+- Depth values are in **metres** (not mm) — `InitParameters` receives them directly.
+
+**Qt warning suppression** (set before `import cv2`):
+```python
+os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')           # use X11; skip wayland plugin search
+os.environ.setdefault('QT_QPA_FONTDIR', '/usr/share/fonts')  # system fonts; skip bundled dir
+```
+These mute the `qt.qpa.plugin: Could not find the Qt platform plugin "wayland"` and `QFontDatabase: Cannot find font directory` warnings that OpenCV's bundled Qt emits on startup.
+
+**`normalize_depth_to_colormap()` fix**: `np.clip` passes `NaN`/`inf` through unchanged, causing a `RuntimeWarning: invalid value encountered in cast` when converting to `uint8`. Fixed by zeroing non-finite positions in `inverted` before the cast (they are overwritten black immediately after anyway):
+```python
+inverted[nan_mask] = 0.0
+scaled = (inverted * 255).astype(np.uint8)
+```
+
+### `software.py` additions
+
+Imports added: `show_pc_settings_dialog`, `pc_record_mode`, `pc_analyze_mode`.
+
+Two new dispatch branches added (same pattern as existing modes):
+```python
+elif mode == 'pc_record':
+    settings = show_pc_settings_dialog()
+    ...
+    result = pc_record_mode(resolution, depth_min, depth_max)
+
+elif mode == 'pc_analyze':
+    folder = filedialog.askdirectory(...)
+    result = pc_analyze_mode(folder)
+```
+
+### `tools/get_pc/` — standalone point cloud tools
+
+Two scripts in `software/tools/get_pc/` for ad-hoc point cloud quality assessment (not part of the main mode pipeline):
+
+**`get_pc.py`**: live point cloud viewer using the ZED SDK's `ogl_viewer` (OpenGL). Press `s` to save a PLY snapshot to `tools/recordings/`. Requires the same `pyzed` venv as `software.py`. Run from the `software/` directory: `uv run tools/get_pc/get_pc.py`.
+
+**`view_pc.py`**: Open3D viewer for the saved PLY files. Shows a file picker (opens to `tools/recordings/`), loads the selected PLY, and displays it in an Open3D window. Patches a ZED SDK PLY writer bug: the last vertex's color data is truncated, so the header vertex count is decremented by 1 before loading to suppress the RPly warning.
 
 ### Raspberry Pi / Jetson pipeline
 

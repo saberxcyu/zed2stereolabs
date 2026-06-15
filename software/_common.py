@@ -6,6 +6,8 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog
 
+os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')          # use X11; skip wayland plugin search
+os.environ.setdefault('QT_QPA_FONTDIR', '/usr/share/fonts')  # system fonts; skip bundled dir
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -88,6 +90,7 @@ def normalize_depth_to_colormap(depth_data, min_d, max_d):
     else:
         normalized = (working - min_d) / range_span
         inverted   = 1.0 - normalized
+    inverted[nan_mask] = 0.0          # NaN/inf → 0 before cast; overwritten black below
     scaled    = (inverted * 255).astype(np.uint8)
     colorized = cv2.applyColorMap(scaled, cv2.COLORMAP_JET)
     colorized[nan_mask] = [0, 0, 0]
@@ -107,15 +110,15 @@ def _center_window(root, w, h):
 
 def show_mode_dialog():
     """
-    2x2 mode selection dialog.
-    Returns 'record', 'analyze', 'pose', 'pose_analyze', or None if closed.
+    3x2 mode selection dialog.
+    Returns 'record', 'analyze', 'pose', 'pose_analyze', 'pc_record', 'pc_analyze', or None.
     """
     result = [None]
 
     root = tk.Tk()
     root.title("ZED Tool")
     root.resizable(False, False)
-    _center_window(root, 520, 280)
+    _center_window(root, 520, 360)
 
     tk.Label(root, text="Select Mode", font=("DejaVu Sans", 16, "bold")).pack(pady=(16, 10))
 
@@ -135,6 +138,11 @@ def show_mode_dialog():
     pose_frame.pack(padx=20, pady=4, fill='x')
     _btn(pose_frame, "Record",  'pose',         "#5a2d82")
     _btn(pose_frame, "Analyze", 'pose_analyze', "#2d5a82")
+
+    pc_frame = tk.LabelFrame(root, text="Point Cloud", font=("DejaVu Sans", 10, "bold"), padx=6)
+    pc_frame.pack(padx=20, pady=4, fill='x')
+    _btn(pc_frame, "Record",  'pc_record',  "#1a5c3a")
+    _btn(pc_frame, "Analyze", 'pc_analyze', "#5c3a1a")
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
@@ -258,6 +266,73 @@ def show_pose_settings_dialog():
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
     return result[0]
+
+
+def show_pc_settings_dialog():
+    """Resolution + depth range + voxel size dialog. Returns (sl.RESOLUTION, depth_min_mm, depth_max_mm, voxel_size_mm) or None."""
+    result = [None]
+
+    root = tk.Tk()
+    root.title("ZED Point Cloud Settings")
+    root.resizable(False, False)
+    _center_window(root, 620, 310)
+
+    tk.Label(root, text="Point Cloud Settings",
+             font=("DejaVu Sans", 14, "bold")).pack(pady=(16, 10))
+
+    panels = tk.Frame(root)
+    panels.pack(padx=20, fill='x')
+
+    left = tk.LabelFrame(panels, text="Resolution", font=("DejaVu Sans", 10, "bold"), padx=10, pady=8)
+    left.pack(side=tk.LEFT, fill='y', padx=(0, 10))
+
+    choice = tk.IntVar(value=0)
+    for i, (name, _, w, h, fps) in enumerate(RESOLUTION_OPTIONS):
+        tk.Radiobutton(left, text=f"{name}   {w} x {h}  @  {fps} fps",
+                       variable=choice, value=i, font=("DejaVu Sans", 10)).pack(anchor='w')
+
+    right = tk.LabelFrame(panels, text="Parameters", font=("DejaVu Sans", 10, "bold"), padx=14, pady=8)
+    right.pack(side=tk.LEFT, fill='both', expand=True)
+
+    tk.Label(right, text="Min depth (m):").grid(row=0, column=0, sticky='w', pady=6)
+    min_var = tk.StringVar(value="0.5")
+    tk.Entry(right, textvariable=min_var, width=8).grid(row=0, column=1, padx=8)
+
+    tk.Label(right, text="Max depth (m):").grid(row=1, column=0, sticky='w', pady=6)
+    max_var = tk.StringVar(value="2.0")
+    tk.Entry(right, textvariable=max_var, width=8).grid(row=1, column=1, padx=8)
+
+    err_label = tk.Label(right, text="", fg="red", font=("DejaVu Sans", 9))
+    err_label.grid(row=2, column=0, columnspan=2, pady=(4, 0))
+
+    def on_start():
+        try:
+            mn = float(min_var.get())
+            mx = float(max_var.get())
+        except ValueError:
+            err_label.config(text="Enter valid numbers.")
+            return
+        if mn <= 0 or mx <= 0:
+            err_label.config(text="Values must be positive.")
+            return
+        if mn >= mx:
+            err_label.config(text="Min must be less than Max.")
+            return
+        result[0] = (RESOLUTION_OPTIONS[choice.get()], mn, mx)
+        root.destroy()
+
+    tk.Button(root, text="Start Recording", width=16, font=("DejaVu Sans", 11),
+              command=on_start, bg="#1a5c3a", fg="white").pack(pady=14)
+
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+
+    if result[0] is None:
+        return None
+    (name, res_enum, w, h, fps), mn, mx = result[0]
+    print(f"[Resolution] {name}  ({w} x {h} @ {fps} fps)")
+    print(f"[PC] depth [{mn:.1f}, {mx:.1f}] m")
+    return res_enum, mn, mx
 
 
 def get_display_resolution(zed):
