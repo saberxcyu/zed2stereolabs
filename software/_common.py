@@ -8,6 +8,17 @@ from tkinter import filedialog
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')          # use X11; skip wayland plugin search
 os.environ.setdefault('QT_QPA_FONTDIR', '/usr/share/fonts')  # system fonts; skip bundled dir
+
+# Qt checks for a bundled font dir inside the cv2 wheel (cv2/qt/fonts/) and warns when it
+# doesn't exist. Creating it empty satisfies the check; fontconfig handles actual rendering.
+try:
+    import importlib.util as _ilu
+    _spec = _ilu.find_spec('cv2')
+    if _spec and _spec.origin:
+        os.makedirs(os.path.join(os.path.dirname(_spec.origin), 'qt', 'fonts'), exist_ok=True)
+except Exception:
+    pass
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt

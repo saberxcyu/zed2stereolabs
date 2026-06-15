@@ -134,19 +134,21 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 - Coordinate axes gizmo drawn in the bottom-left corner of the video frame: X=right (red), Y=up (green), Z=into-screen (blue).
 
 **Point Cloud record mode** (`pc_record_mode` in `_pc_record.py`): records per-pixel XYZRGB point cloud clips:
-- Uses `sl.MEASURE.XYZRGBA` — same NEURAL depth network as depth mode, different output format.
+- Uses `sl.MEASURE.DEPTH` during recording (same as depth mode) — avoids the overhead of `MEASURE.XYZRGBA` so the grab loop runs at the full camera fps (~15 fps at HD2K).
 - `coordinate_system=sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP`, `coordinate_units=sl.UNIT.METER`. Forward objects have **negative Z** in this coordinate system.
 - Live display: same RGB + colorized depth side-by-side view as depth record mode (`normalize_depth_to_colormap`).
-- Color unpacking from `MEASURE.XYZRGBA`: RGBA packed into float32 bits; R = bits 0–7, G = bits 8–15, B = bits 16–23 of the reinterpreted uint32. This is **not** BGR like OpenCV images.
-- Depth filter uses negated thresholds: `xyz[:,2] <= -depth_min` and `xyz[:,2] >= -depth_max`.
+- XY coordinates are **not** computed on the fly. Raw depth frames accumulate in RAM during recording. When stop is pressed, XY is computed from camera intrinsics (`fx, fy, cx, cy` from `calibration_parameters.left_cam`) before saving:
+  - `X = (u - cx) / fx * depth`
+  - `Y = -(v - cy) / fy * depth`  (image Y inverted vs world Y)
+  - `Z = -depth`  (forward objects are negative Z in RIGHT_HANDED_Y_UP)
 - `pc.npz` schema — unorganized flat array (variable point count per frame):
-  - `points`       (total_N, 6) float32 — XYZRGB; XYZ in metres, RGB normalized to [0,1]
+  - `points`       (total_N, 6) float32 — XYZRGB; XYZ in metres, RGB normalised to [0,1]
   - `frame_counts` (T,) int32           — number of valid points per frame
   - `timestamps`   (T,) float64         — seconds since recording start
   - `depth_min`    scalar float32       — minimum depth used during recording (metres)
   - `depth_max`    scalar float32       — maximum depth used during recording (metres)
   - Frame i reconstruction: `pts = points[offsets[i]:offsets[i+1]]` where `offsets = cumsum(frame_counts)`.
-- No video file is saved — only `pc.npz`. All point data accumulates in RAM and is flushed on stop.
+- No video file is saved — only `pc.npz`. Raw depth frames accumulate in RAM and XY is computed in a batch on stop before flushing to disk.
 
 **Point Cloud analyze mode** (`pc_analyze_mode` in `_pc_analyze.py`): Open3D clip viewer for pc.npz recordings:
 - Uses `o3d.visualization.VisualizerWithKeyCallback` (GLFW + OpenGL). The Open3D GUI/Filament module (`open3d.visualization.gui`) hangs on Hyprland/XWayland and must not be used.
@@ -173,7 +175,7 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')           # use X11; skip wayland plugin search
 os.environ.setdefault('QT_QPA_FONTDIR', '/usr/share/fonts')  # system fonts; skip bundled dir
 ```
-These mute the `qt.qpa.plugin: Could not find the Qt platform plugin "wayland"` and `QFontDatabase: Cannot find font directory` warnings that OpenCV's bundled Qt emits on startup.
+`QT_QPA_PLATFORM=xcb` mutes `qt.qpa.plugin: Could not find the Qt platform plugin "wayland"`. `QT_QPA_FONTDIR` tells Qt where to find fonts for rendering, but does not suppress the `QFontDatabase: Cannot find font directory` warning — that warning fires because Qt also checks for a bundled font directory inside the cv2 wheel (`cv2/qt/fonts/`) which doesn't exist. The fix is to create that directory (empty) before importing cv2 using `importlib.util.find_spec('cv2')`; fontconfig then handles actual font rendering.
 
 **`normalize_depth_to_colormap()` fix**: `np.clip` passes `NaN`/`inf` through unchanged, causing a `RuntimeWarning: invalid value encountered in cast` when converting to `uint8`. Fixed by zeroing non-finite positions in `inverted` before the cast (they are overwritten black immediately after anyway):
 ```python

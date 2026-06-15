@@ -16,7 +16,7 @@ def pc_analyze_mode(folder):
         return 'back'
 
     data         = np.load(npz_path)
-    points       = data['points']        # (total_N, 6) float32
+    points       = data['points']        # (total_N, 6) float32  XYZRGB
     frame_counts = data['frame_counts']  # (T,) int32
     timestamps   = data['timestamps']    # (T,) float64
     depth_min_m  = float(data['depth_min']) if 'depth_min' in data else 0.3
