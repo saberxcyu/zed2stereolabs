@@ -1,4 +1,10 @@
 from _common import *
+from tkinter import simpledialog
+
+# matplotlib's default "tab10" color cycle -- same colors plot.py's ROI lines get
+# automatically when no explicit color is set, so ROI colors stay consistent across tools.
+ROI_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
 
 def depth_analyze_mode(folder):
@@ -35,7 +41,12 @@ def depth_analyze_mode(folder):
 
     print(f"Loaded: {N} frames, {W}x{H}, depth range [{min_depth}, {max_depth}] m")
     print("Left-click to select point  |  Left-click+drag to select region")
+    print("Each selection prompts for a name and is added as its own ROI to the chart.")
     print("Drag the slider to navigate frames.\n")
+
+    tk_root = tk.Tk()
+    tk_root.withdraw()
+    rois = []
 
     cmap = mcm.get_cmap('jet_r').copy()
 
@@ -43,7 +54,7 @@ def depth_analyze_mode(folder):
     fig.canvas.manager.set_window_title(f"Reading depth data - {folder}")
 
     ax_frame  = fig.add_axes([0.05, 0.18, 0.44, 0.74])
-    ax_plot   = fig.add_axes([0.57, 0.18, 0.40, 0.74])
+    ax_plot   = fig.add_axes([0.57, 0.18, 0.29, 0.74])
     ax_play   = fig.add_axes([0.02, 0.035, 0.06, 0.065])
     ax_slider = fig.add_axes([0.10, 0.05, 0.85, 0.04])
 
@@ -66,12 +77,11 @@ def depth_analyze_mode(folder):
     ax_frame.add_patch(region_rect)
 
     ax_plot.set_xlabel('Time (s)')
-    ax_plot.set_ylabel('Depth (m)')
+    ax_plot.set_ylabel('Depth (m) (inverted depth)')
     ax_plot.set_xlim(timestamps[0], timestamps[-1])
-    ax_plot.set_ylim(min_depth, max_depth)
-    ax_plot.set_title('Click or drag on the frame to select a point / region', fontsize=9)
+    ax_plot.set_ylim(max_depth, min_depth)
+    ax_plot.set_title('Average Depth Over Time', fontsize=9)
     ax_plot.grid(True, alpha=0.3)
-    plot_line, = ax_plot.plot([], [], lw=1.5, color='steelblue')
     vline = ax_plot.axvline(timestamps[0], color='red', lw=1, ls='--', alpha=0.7)
 
     slider   = Slider(ax_slider, '', 0, N - 1, valinit=0, valstep=1)
@@ -118,15 +128,54 @@ def depth_analyze_mode(folder):
 
     slider.on_changed(on_slider)
 
-    def update_plot(ts, depth_series, label):
+    def rescale_plot():
+        """Fit the x/y range to the actual finite data across all confirmed ROIs, instead
+        of the full sensor time/depth range, so the signal isn't lost in empty margin."""
+        finite_ts, finite_depths = [], []
+        for roi in rois:
+            mask = np.isfinite(roi['depth_series'])
+            if mask.any():
+                finite_ts.append(timestamps[mask])
+                finite_depths.append(roi['depth_series'][mask])
+        if not finite_depths:
+            return
+        all_ts     = np.concatenate(finite_ts)
+        all_depths = np.concatenate(finite_depths)
+        t_lo, t_hi = all_ts.min(), all_ts.max()
+        d_lo, d_hi = all_depths.min(), all_depths.max()
+        t_pad = (t_hi - t_lo) * 0.02 or 0.5
+        d_pad = (d_hi - d_lo) * 0.1 or 0.05
+        ax_plot.set_xlim(t_lo - t_pad, t_hi + t_pad)
+        ax_plot.set_ylim(d_hi + d_pad, d_lo - d_pad)  # inverted: larger depth at the bottom
+
+    def confirm_roi(depth_series, add_frozen_artist):
+        """Prompt for a name via a Tk dialog and, if given a valid unique name, add this
+        selection as a permanent ROI: its own colored marker/rect on ax_frame (via
+        add_frozen_artist(color, name)) and its own line on ax_plot with a legend entry."""
+        name = simpledialog.askstring("Name ROI", "Enter a name for this ROI:", parent=tk_root)
+        if name is None:
+            return False
+        name = name.strip()
+        if not name:
+            print("ROI name cannot be empty -- selection not added, try again")
+            return False
+        if any(roi['name'] == name for roi in rois):
+            print(f"ROI name '{name}' is already used -- pick a different name")
+            return False
+
+        color = ROI_COLORS[len(rois) % len(ROI_COLORS)]
+        add_frozen_artist(color, name)
         masked_depth = np.ma.masked_where(~np.isfinite(depth_series), depth_series)
-        plot_line.set_xdata(ts)
-        plot_line.set_ydata(masked_depth)
-        ax_plot.set_title(label, fontsize=9)
-        ax_plot.set_xlim(ts[0], ts[-1])
-        ax_plot.set_ylim(min_depth, max_depth)
-        vline.set_xdata([ts[int(slider.val)]])
-        fig.canvas.draw_idle()
+        ax_plot.plot(timestamps, masked_depth, marker='o', markersize=1, linewidth=1,
+                     color=color, label=name)
+        handles, labels = ax_plot.get_legend_handles_labels()
+        order = sorted(range(len(labels)), key=lambda i: labels[i].lower())
+        ax_plot.legend([handles[i] for i in order], [labels[i] for i in order],
+                       fontsize=7, ncol=1, loc='center left', bbox_to_anchor=(1.02, 0.5))
+        rois.append({'name': name, 'depth_series': depth_series})
+        rescale_plot()
+        print(f"ROI '{name}' added ({len(rois)} total)")
+        return True
 
     _selector_fired = [False]
 
@@ -142,14 +191,23 @@ def depth_analyze_mode(folder):
         y1, y2 = max(0, y1), min(H - 1, y2)
         region       = frames[:, y1:y2 + 1, x1:x2 + 1].astype(np.float32)
         depth_series = np.nanmean(region.reshape(N, -1), axis=1)
-        label        = f"Region x=[{x1},{x2}] y=[{y1},{y2}] - mean"
         point_marker.set_data([], [])
         region_rect.set_xy((x1, y1))
         region_rect.set_width(x2 - x1)
         region_rect.set_height(y2 - y1)
         region_rect.set_visible(True)
+        fig.canvas.draw_idle()
         print_region_table(x1, y1, x2, y2, timestamps, region)
-        update_plot(timestamps, depth_series, label)
+
+        def add_frozen_artist(color, name):
+            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, edgecolor=color,
+                                  facecolor='none', lw=2, zorder=5)
+            ax_frame.add_patch(rect)
+            ax_frame.text(x1, max(0, y1 - 3), name, color=color, fontsize=8, zorder=6)
+
+        confirm_roi(depth_series, add_frozen_artist)
+        region_rect.set_visible(False)
+        fig.canvas.draw_idle()
 
     def on_release(event):
         if event.inaxes != ax_frame or event.button != 1:
@@ -162,11 +220,18 @@ def depth_analyze_mode(folder):
         cx           = max(0, min(W - 1, int(round(event.xdata))))
         cy           = max(0, min(H - 1, int(round(event.ydata))))
         depth_series = frames[:, cy, cx].astype(np.float32)
-        label        = f"Point ({cx}, {cy})"
         point_marker.set_data([cx], [cy])
         region_rect.set_visible(False)
+        fig.canvas.draw_idle()
         print_point_table(cx, cy, timestamps, depth_series)
-        update_plot(timestamps, depth_series, label)
+
+        def add_frozen_artist(color, name):
+            ax_frame.plot([cx], [cy], '+', color=color, ms=14, mew=2.5, zorder=6)
+            ax_frame.text(cx + 4, max(0, cy - 4), name, color=color, fontsize=8, zorder=6)
+
+        confirm_roi(depth_series, add_frozen_artist)
+        point_marker.set_data([], [])
+        fig.canvas.draw_idle()
 
     selector = RectangleSelector(
         ax_frame, on_select,
@@ -185,4 +250,5 @@ def depth_analyze_mode(folder):
 
     fig.canvas.mpl_connect('key_press_event', on_key)
     plt.show()
+    tk_root.destroy()
     return 'back' if closed_by_q[0] else 'quit'

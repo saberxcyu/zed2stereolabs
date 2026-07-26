@@ -12,6 +12,7 @@ wheels/
 # Video recordings
 software/recordings/
 software/tools/recordings/
+software/tools/data collection/recordings/
 raspberry_pi/recordings/
 
 

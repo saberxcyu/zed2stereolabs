@@ -27,7 +27,7 @@ uv run software.py
 ```
 A 3×2 mode selection window appears first (Depth / Pose / Point Cloud rows, each with Record and Analyze):
 - **Depth > Record**: recording settings dialog (resolution left, depth range right; HD2K and 0.5/1.5 m defaults) -> live RGB+depth view. Press `s` to start/stop recording, `q` to return to the mode menu, or close [x] to exit. Saves `recordings/depth_<timestamp>/video.mp4` (left sensor rectified frames only) and `depth.npz`.
-- **Depth > Analyze**: folder picker (opens to `recordings/`) -> loads `video.mp4` + `depth.npz` -> matplotlib viewer. Click or drag a region to plot depth over time. Slider scrubs frames, `[>]` plays. `q` or close [x] controls navigation.
+- **Depth > Analyze**: folder picker (opens to `recordings/`) -> loads `video.mp4` + `depth.npz` -> matplotlib viewer. Click or drag a region to add it as a named ROI (prompts for a name via a Tk dialog); each confirmed ROI gets its own colored marker/rect on the frame and its own line on the depth-over-time chart, so multiple ROIs can be compared at once. Slider scrubs frames, `[>]` plays. `q` or close [x] controls navigation.
 - **Pose > Record**: pose settings dialog (resolution left, keypoint format BODY_18/34/38 right; HD2K and BODY_18 defaults) -> live side-by-side view (raw RGB left, skeleton overlay right). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pose_<timestamp>/video.mp4` (left sensor rectified frames only) and `pose.npz`.
 - **Pose > Analyze**: folder picker (opens to `recordings/`) -> loads `pose.npz` + `video.mp4` -> matplotlib viewer. Select a keypoint from radio buttons to plot its X, Y, Z position in meters over time; axis colors match the on-screen coordinate gizmo (red=X, green=Y, blue=Z). Left panel shows video with skeleton overlay and coordinate axes gizmo. Slider scrubs frames, `[>]` plays. `q` returns to menu, [x] exits.
 - **Point Cloud > Record**: PC settings dialog (resolution left, depth range in metres right; HD2K and 0.5/2.0 m defaults) -> live RGB+depth view (same as depth record). Press `s` to start/stop, `q` to return, [x] to exit. Saves `recordings/pc_<timestamp>/pc.npz` (per-pixel XYZRGB point clouds, no video file).
@@ -59,9 +59,22 @@ zed2stereolabs/
       pc_<timestamp>/
         pc.npz
     tools/
-      video.py                   # stereo SVO recording via ZED SDK (requires pyzed)
-      recordings/                # SVO recordings land here
-        stereo_<timestamp>.svo2
+      "data collection"/         # offline SVO record -> process -> analyze pipeline (space in dirname)
+        record.py                # capture only: stereo SVO recording via ZED SDK
+        process.py                # offline NEURAL depth replay of a recorded SVO
+        convert_to_pc.py          # depth -> organized per-pixel XYZ point cloud
+        select_roi.py              # interactive 2D ROI selection over depth.bin OR pointcloud.bin -> CSV
+        plot.py                     # CSV -> depth-over-time PNG
+        recordings/                # each recording's full pipeline output lands here
+          svo_<timestamp>/
+            recording.svo2         # record.py
+            video.mp4               # process.py
+            depth.bin                # process.py (raw float32, appended, shape (N,H,W))
+            depth_meta.npz           # process.py (timestamps_ns, height/width, intrinsics, depth range)
+            pointcloud.bin            # convert_to_pc.py (raw float32, appended, shape (N,H,W,3))
+            pointcloud_meta.npz        # convert_to_pc.py (self-sufficient copy of the metadata above)
+            roi.csv                    # select_roi.py (frame,roi,depth,timestamp OR frame,roi,x,y,z,timestamp)
+            roi_depth_over_time.png    # plot.py
       get_pc/
         get_pc.py                # standalone live point cloud viewer (ogl_viewer + PLY save)
         view_pc.py               # Open3D viewer for saved PLY files (file picker)
@@ -110,7 +123,11 @@ RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'record
 **Depth analyze mode** (`depth_analyze_mode` in `_depth_analyze.py`): loads a recorded folder and provides an interactive matplotlib viewer:
 - Depth overlay uses `jet_r` colormap (red=near, blue=far) with RGBA blending over the RGB video.
 - Non-finite values (`NaN`, `+/-inf`) are forced to opaque black after colormap application.
-- Single-pixel click or drag-to-select-region both plot depth vs. time on the right panel.
+- Single-pixel click or drag-to-select-region each prompt for a name (`simpledialog.askstring`, via a hidden `tk.Tk()` root created/destroyed around the viewer session) and, once named, are added as a permanent ROI rather than replacing the previous selection -- empty or duplicate names are rejected and the selection is discarded.
+- Each confirmed ROI gets a persistent colored marker/rectangle + text label on the frame panel, and its own line on the depth-over-time chart (`marker='o', markersize=1, linewidth=1`; y-axis inverted so decreasing depth reads as an upward peak, a chest-breathing visualization convention).
+- ROI colors cycle through `ROI_COLORS`, matplotlib's default "tab10" cycle (`#1f77b4` blue, `#ff7f0e` orange, `#2ca02c` green, `#d62728` red, `#9467bd` purple, `#8c564b` brown, `#e377c2` pink, `#7f7f7f` gray, `#bcbd22` olive, `#17becf` cyan) -- 10 distinct colors, so an 11th ROI repeats the first. Matches the color `plot.py` assigns automatically (no explicit color set there, so matplotlib's own default cycle applies in ROI-confirmation order) and `select_roi.py`'s duplicated copy of the same palette, so a given ROI is the same color on the frame markers and on the depth-over-time chart across all three tools.
+- The legend sits outside the plot axes on the right (`ax_plot` narrowed to leave room) and is re-sorted alphabetically by ROI name on every addition; color assignment stays tied to confirmation order regardless of the legend's sort order.
+- Chart title is fixed to `'Average Depth Over Time'` (not per-selection); x/y limits auto-rescale (`rescale_plot()`) to the finite-data extent across all confirmed ROIs, with ~10% y-padding and ~2% x-padding, instead of the full sensor depth/time range.
 
 **Pose record mode** (`pose_record_mode` in `_pose_record.py`): live body tracking with optional recording:
 - Requires positional tracking enabled before body tracking (ZED SDK requirement).
@@ -207,11 +224,33 @@ Two scripts in `software/tools/get_pc/` for ad-hoc point cloud quality assessmen
 
 **`view_pc.py`**: Open3D viewer for the saved PLY files. Shows a file picker (opens to `tools/recordings/`), loads the selected PLY, and displays it in an Open3D window. Patches a ZED SDK PLY writer bug: the last vertex's color data is truncated, so the header vertex count is decremented by 1 before loading to suppress the RPly warning.
 
+### Offline SVO data-collection pipeline (`software/tools/data collection/`)
+
+A separate, terminal-first pipeline for long (1-20 minute) recordings, entirely decoupled from `software.py`'s tkinter mode menu and from the six modes documented above. Lives in its own `data collection/` subfolder under `software/tools/` (note the space in the directory name — always quote it on the command line, e.g. `uv run "tools/data collection/process.py" ...`), separate from `tools/get_pc/` and from `tools/recordings/` (which holds unrelated PLY snapshots from `get_pc.py`). Exists because `_depth_record.py`'s live-capture pattern (run NEURAL depth *and* buffer every frame in RAM simultaneously) becomes laggy and RAM-heavy well before 20 minutes. Five flat scripts, no shared module between them (small helpers like the Tk file/folder picker and the `ROI_COLORS` palette are deliberately duplicated per-script rather than factored out) — only genuinely-unchanged helpers from `_common.py` (`RESOLUTION_OPTIONS`, `_center_window`, `get_display_resolution`, `create_video_writer`, `draw_status`) are imported, via `sys.path.insert(0, .../'..', '..')` (two levels up from `data collection/` to reach `software/`). **Note the naming overlap with the unrelated `raspberry_pi/record.py` / `raspberry_pi/process.py` (different subproject, different purpose, no shared code) — always disambiguate by full path.**
+
+Each stage writes into the same `software/tools/data collection/recordings/svo_<timestamp>/` folder as the previous one (see Directory Structure above for the exact file list). Invocation convention across `process.py`/`convert_to_pc.py`/`plot.py`: optional positional path argument (a recording folder, or for `plot.py` a CSV file), falling back to a Tk picker if omitted. `select_roi.py` takes a specific `.bin` file rather than a folder (see below) and `record.py` takes `--resolution`/`--compression` flags instead of a path, since it has nothing to read yet.
+
+**Key architectural decision — raw-appended binary, not `np.savez_compressed` or a pre-allocated memmap:** `depth.bin` and `pointcloud.bin` are opened once in `'wb'` mode and each frame's `.tobytes()` is appended directly to disk as it's produced — no Python-side frame buffering, no upfront full-size allocation. `np.savez_compressed` (today's `_depth_record.py`/`_pc_record.py` pattern) needs the entire array in RAM before writing, which is infeasible at these sizes (~197GB of depth alone for 20 minutes at HD2K@15fps: `2208×1242×4 bytes × ~18,000 frames`). `np.load(path, mmap_mode='r')` on a *compressed* npz silently doesn't actually memory-map either — compression makes per-frame byte offsets unpredictable, so numpy decompresses the whole thing into RAM regardless of the flag (this is a pre-existing, previously-unnoticed characteristic of `_depth_analyze.py`'s own `depth.npz` loading). Plain append makes on-disk file size the ground truth for how many frames really got written (`n_frames = os.path.getsize(path) // (H*W*4)`), which matters if a long `process.py` run is interrupted — no separate counter can drift out of sync with what's actually on disk. Small scalar metadata (timestamps, camera intrinsics, depth range) still goes in a small **compressed** `.npz` per stage, since only the dense per-pixel arrays need the raw-append treatment.
+
+**`record.py`** (`record_mode`, minimal rename of the former `tools/video.py` / `stereo_video_mode`, since relocated into `tools/data collection/`): unchanged capture behavior — `depth_mode=sl.DEPTH_MODE.NONE` (no depth computed during capture), live left|right rectified OpenCV preview, `zed.enable_recording()`/`disable_recording()` writing directly to `svo_<timestamp>/recording.svo2` via the SDK's own internal encoding thread (zero Python-side buffering already, both before and after the rename). No settings dialog — the former tkinter resolution/compression picker was replaced with `--resolution {HD2K,HD1080,HD720,VGA}` (default `HD2K`) and `--compression {H264,H265,LOSSLESS}` (default `H264`) CLI flags, matching the terminal-first convention of the other 4 scripts. `'s'` start/stop, `'q'`/`[x]` quit; discard-on-interrupt `shutil.rmtree`s the whole `svo_<timestamp>/` folder. While recording, prints a live elapsed-time clock to the terminal (`\r[Recording]   12.3s`, updated every frame) via `time.monotonic()` measured from when `'s'` was pressed.
+
+**`process.py`**: replays a recorded `.svo2` **offline** (`init.set_from_svo_file(path)`, `svo_real_time_mode` left at its default `False` so replay runs as fast as NEURAL inference allows, not paced to the original capture rate) with `depth_mode=sl.DEPTH_MODE.NEURAL`, writing `video.mp4` (RGB, via `create_video_writer`) and `depth.bin` frame-by-frame until `sl.ERROR_CODE.END_OF_SVOFILE_REACHED`. Per-frame timestamps use `zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds()` — the camera's original hardware capture timestamp, preserved in the SVO regardless of replay speed — **not** `time.monotonic()` (which `_depth_record.py` uses correctly for *live* capture, but which would be meaningless here since replay speed has no fixed relationship to capture speed). CLI: `--depth-min`/`--depth-max` (defaults **0.25**/1.5m — deliberately narrower on the near end than `_depth_record.py`'s 0.5/1.5m default); resolution/dtype are not configurable (hardcoded float32, full capture resolution, matching today's precision) to keep the config surface minimal. Depth range only matters here — `record.py` never computes depth at all, so there's nothing to constrain at capture time.
+
+**`convert_to_pc.py`**: converts `depth.bin` into an **organized** `(H, W, 3)`-per-frame XYZ point cloud (`pointcloud.bin`) — same per-pixel indexing as depth, so a 2D pixel selection maps directly to a 3D point at that index, no nearest-neighbor search needed. Formula is the same one `_pc_record.py` already uses for its (unorganized/flat) point clouds: `X=(u-cx)/fx*depth`, `Y=-(v-cy)/fy*depth`, `Z=-depth` (`RIGHT_HANDED_Y_UP`: forward objects are negative Z). Depth-only storage in `process.py` plus this on-demand XY reconstruction (rather than storing dense XYZ from the start) was a deliberate choice: X/Y are fully determined by `(row, col, depth, fx, fy, cx, cy)`, so storing them densely from the start would triple `process.py`'s output for zero new information. `pointcloud_meta.npz` is a fresh, self-sufficient copy of the scalar metadata (not a reference back to `depth_meta.npz`), since `depth.bin` is typically deleted once the point cloud exists to reclaim disk space.
+
+**`select_roi.py`**: interactive matplotlib viewer, modeled on `_depth_analyze.py`'s proven point/region-click + `simpledialog`-naming interaction (same `ROI_COLORS` palette, same empty/duplicate-name rejection, same persistent colored marker/rectangle + label per confirmed ROI), simplified to a single frame panel + slider (no live chart — that's `plot.py`'s job now, run afterward from the CSV). Deliberately does **not** reuse `_common.py`'s `preload_rgb_frames()` (which decodes an entire video into a RAM list up front — exactly the problem this pipeline exists to avoid at 20-minute scale); instead keeps one `cv2.VideoCapture` open, doing a sequential `.read()` on forward steps and `CAP_PROP_POS_FRAMES` only on true jumps.
+
+Takes a specific `.bin` file as its positional argument (not a folder) — either `depth.bin` or `pointcloud.bin` — and auto-detects mode from the filename (`BIN_MODES` dict mapping basename -> (`'depth'`|`'pointcloud'`, companion meta file, channel count)), loading the sibling `video.mp4`/meta file from the same directory either way. `convert_to_pc.py` is therefore optional: ROI selection and depth-over-time analysis work directly against `depth.bin` alone (skipping the ~3x-larger `pointcloud.bin` and its processing time entirely) whenever X/Y aren't actually needed — `convert_to_pc.py` only needs to run first when you specifically want XYZ (e.g. for SMPL vertex mapping). Each confirmed ROI stores flat pixel-index arrays (`rows`, `cols`) into whichever array is loaded — this *is* the mechanism that lets a 2D-space selection resolve to a specific pixel's depth or 3D point later, regardless of mode. Keys: `e` exports all confirmed ROIs to `roi.csv` (one row per valid point per frame per ROI, **not** pre-averaged — averaging is `plot.py`'s job) and exits; `q` or `[x]` cancels without writing anything (unlike `_depth_analyze.py`'s `'q'`, there's no menu to return to here). CSV schema depends on mode: `frame,roi,depth,timestamp` for `depth.bin`, `frame,roi,x,y,z,timestamp` for `pointcloud.bin`. `timestamp` is always raw Unix-epoch seconds (`timestamps_ns[frame] / 1e9`), not pre-zeroed — `plot.py` normalizes to a shared `t0` itself. Prints terminal confirmations at each stage (`[Mode]`, `[Loaded]` for the bin/meta/video files, per-ROI confirmations, `[Exporting]` progress, final `[Saved]`).
+
+**`plot.py`**: loads `roi.csv` with stdlib `csv`+`collections.defaultdict` (no pandas, matching this repo's dependency set), groups by `(roi, frame)`, averages, and plots depth vs. elapsed time per ROI — directly modeled on the sibling LiDAR project's `plot.py` at `/home/saberxcyu/Projects/veloview-docker/plot.py` (grouping/averaging logic, `y`-axis inversion convention, and no-`plt.show()`/`savefig`-only batch behavior are all ported as-is). Detects which of `select_roi.py`'s two CSV schemas it's reading from the header (`'z' in fieldnames` -> pointcloud mode, else `'depth'` -> depth mode), mirroring the graceful-fallback pattern the LiDAR `plot.py` already uses for its optional `channel_deg` column. **Sign correction only applies to pointcloud-mode CSVs**: the point cloud's `Z = -depth`, so those get plotted as `-avg_z` (positive distance-from-camera) before `ax.invert_yaxis()` — plotting raw `z` directly would double the sign flip and read backwards. Depth-mode CSVs are already positive distance and need no correction. Output: `<csv_dir>/<csv_stem>_depth_over_time.png` (same folder as the input CSV, i.e. `roi_depth_over_time.png` for the standard `roi.csv` name), styled to match `_depth_analyze.py`'s existing chart conventions (`marker='o', markersize=1, linewidth=1`, inverted y-axis, `"Average Depth Over Time"` title).
+
+**Known open risks, not yet exercised against a real long recording**: total disk usage for a full 20-minute HD2K clip (`depth.bin` + `pointcloud.bin` combined) is on the order of ~790GB — validate on short (1-2 minute) clips first. NEURAL-mode SVO replay throughput on this GPU is unmeasured. `select_roi.py`'s `mp4v`/OpenCV random-seek frame accuracy on a long GOP-encoded video is unverified — if inaccurate, the fallback is forward-only sequential reads.
+
 ### Raspberry Pi / Jetson pipeline
 
 Two-step SDK-free workflow for collecting stereo data on a Raspberry Pi or Jetson.
 
-**Step 1 - `record.py`:**
+**Step 1 - `raspberry_pi/record.py`:**
 - Treats the ZED camera as a standard UVC device via V4L2 -- no ZED SDK or CUDA needed.
 - ZED outputs a composite side-by-side frame at double width (left|right) over USB 3.0.
 - Always records MP4/mp4v via OpenCV VideoWriter — no external dependencies.
@@ -256,26 +295,26 @@ per frame (left rectified only). Depth and pose data accumulate in RAM and flush
 stop. One small write per frame stays within the frame period, so `grab()` keeps blocking at
 camera_fps.
 
-**Why `video.py` previously had this problem:** writing two separate VideoWriter files per
+**Why `software/tools/record.py` (formerly `video.py`) previously had this problem:** writing two separate VideoWriter files per
 frame (left + right) doubled per-iteration encode overhead, pushing the loop past the frame
 period. Switching to ZED SDK SVO recording (`zed.enable_recording`) fixes this: the SDK
 records in a separate internal thread and feeds at camera_fps regardless of Python loop speed.
 
-**`record.py` uses a threaded writer:** encoding runs in a dedicated thread decoupled from
+**`raspberry_pi/record.py` uses a threaded writer:** encoding runs in a dedicated thread decoupled from
 the main capture loop via a 16-frame write queue. Encoding never stalls frame capture. If
 encoding falls behind, the write queue fills and drops the oldest frame -- actual written
 fps falls -- but this does not cause sped-up playback because VideoWriter fps is set to
 the declared target at init time regardless of actual write rate. The `[Stats]`
 print on stop reports actual fps, confirming whether any drops occurred.
 
-### If record.py write queue drops frames
+### If raspberry_pi/record.py write queue drops frames
 
 If `[Stats]` reports actual fps significantly below target, the encoder cannot sustain the
 write rate. Playback speed is correct (VideoWriter fps = declared target), but frames
 are missing -- the recording is shorter than real time. Lower the fps cap in
 `RESOLUTION_OPTIONS` for the affected resolution until actual fps meets target.
 
-### Encoding approaches tried and abandoned (record.py)
+### Encoding approaches tried and abandoned (raspberry_pi/record.py)
 
 **GStreamer + nvjpegenc (Jetson hardware JPEG encoder) — abandoned 2026-06-13**
 
@@ -305,7 +344,7 @@ we learned and why it was dropped:
 ### Video output convention
 All `video.mp4` files saved by `software.py` (depth and pose modes) contain **left sensor rectified frames only** (`sl.VIEW.LEFT`). In pyzed 5.3, `sl.VIEW.LEFT` and `sl.VIEW.RIGHT` return rectified frames by default; the `_UNRECTIFIED` suffix opts out.
 
-`software/tools/video.py` records full stereo as a single `stereo_<timestamp>.svo2` file using the ZED SDK's built-in SVO recorder (`zed.enable_recording`). SVO2 stores raw sensor data; left/right rectified views are reconstructed on playback through the SDK. Compression is selectable at launch: H264 lossy (default), H265 lossy, or Lossless.
+`software/tools/data collection/record.py` records full stereo as a single `svo_<timestamp>/recording.svo2` file using the ZED SDK's built-in SVO recorder (`zed.enable_recording`). SVO2 stores raw sensor data; left/right rectified views are reconstructed on playback through the SDK. Compression is selectable at launch: H264 lossy (default), H265 lossy, or Lossless. See "Offline SVO data-collection pipeline" above for the full record -> process -> convert_to_pc -> select_roi -> plot workflow built around this file.
 
 ### Linux-specific notes
 
