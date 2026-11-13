@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+from calibrate import load_calibration, calibration_metadata
 
 import cv2
 import numpy as np
@@ -13,6 +14,13 @@ from _common import get_display_resolution, create_video_writer
 
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
+
+MAX_PERSONS = 10  # array-sizing limit, not a ZED SDK model limit -- matches _pose_record.py
+BODY_FORMAT_OPTIONS = {
+    "BODY_18": (sl.BODY_FORMAT.BODY_18, 18),
+    "BODY_34": (sl.BODY_FORMAT.BODY_34, 34),
+    "BODY_38": (sl.BODY_FORMAT.BODY_38, 38),
+}
 
 
 def resolve_svo_path(arg):
@@ -45,7 +53,7 @@ def resolve_svo_path(arg):
     return None, None
 
 
-def process_svo(svo_path, outdir, depth_min, depth_max):
+def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format):
     init = sl.InitParameters()
     init.set_from_svo_file(svo_path)
     init.depth_mode             = sl.DEPTH_MODE.NEURAL
@@ -62,11 +70,42 @@ def process_svo(svo_path, outdir, depth_min, depth_max):
         print(f"[Error] Could not open {svo_path}: {repr(status)}")
         sys.exit(1)
 
+    calibration_path = os.path.join(outdir, "calibration.json")
+    try:
+        calibration = load_calibration(calibration_path, zed.get_camera_information().serial_number) if os.path.exists(calibration_path) else None
+    except Exception:
+        zed.close()
+        raise
+    frame_metadata = calibration_metadata(calibration)
+    print("[Calibration] " + ("Loaded; XYZ remains camera-space, world transform saved in metadata" if calibration else "Absent: camera-space baseline"))
+
+    body_runtime = None
+    n_kp = None
+    if enable_pose:
+        zed.enable_positional_tracking(sl.PositionalTrackingParameters())
+        body_param = sl.BodyTrackingParameters()
+        body_param.enable_tracking     = True
+        body_param.enable_body_fitting = True
+        body_param.detection_model     = sl.BODY_TRACKING_MODEL.HUMAN_BODY_ACCURATE
+        body_param.body_format, n_kp   = BODY_FORMAT_OPTIONS[body_format]
+        zed.enable_body_tracking(body_param)
+        body_runtime = sl.BodyTrackingRuntimeParameters()
+        body_runtime.detection_confidence_threshold = 40
+
     display_res = get_display_resolution(zed)
     H, W = display_res.height, display_res.width
 
-    calib = zed.get_camera_information().camera_configuration.calibration_parameters.left_cam
+    camera_config = zed.get_camera_information().camera_configuration
+    calib = camera_config.calibration_parameters.left_cam
     fx, fy, cx, cy = calib.fx, calib.fy, calib.cx, calib.cy
+    camera_fps = camera_config.fps
+
+    # Precomputed once: X/Y are fully determined by (row, col, depth, fx, fy, cx, cy),
+    # so depth -> XYZ (RIGHT_HANDED_Y_UP: forward objects are negative Z) is folded
+    # directly into this loop instead of a separate depth.bin -> pointcloud.bin pass.
+    rows, cols = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    u_off = (cols - cx).astype(np.float32)
+    v_off = (rows - cy).astype(np.float32)
 
     n_expected = zed.get_svo_number_of_frames()
     print(f"[Input]      {svo_path}")
@@ -75,17 +114,28 @@ def process_svo(svo_path, outdir, depth_min, depth_max):
 
     runtime = sl.RuntimeParameters()
     runtime.confidence_threshold = 95
+    runtime.measure3D_reference_frame = sl.REFERENCE_FRAME.CAMERA
 
-    depth_path = os.path.join(outdir, "depth.bin")
-    depth_f    = open(depth_path, "wb")
-    writer     = create_video_writer(display_res, outdir)
+    pc_path = os.path.join(outdir, "pointcloud.bin")
+    pc_f    = open(pc_path, "wb")
+    writer  = create_video_writer(display_res, outdir, camera_fps)
 
     image_mat = sl.Mat()
     depth_mat = sl.Mat()
+    bodies    = sl.Bodies() if enable_pose else None
     timestamps_ns = []
     frame_idx = 0
-    nan_frame  = np.full((H, W), np.nan, dtype=np.float32)
+    xyz        = np.empty((H, W, 3), dtype=np.float32)
+    nan_frame  = np.full((H, W, 3), np.nan, dtype=np.float32)
     blank_rgb  = np.zeros((H, W, 3), np.uint8)
+
+    pose_ids, pose_kp3d, pose_conf, pose_np = [], [], [], []
+
+    def append_empty_pose():
+        pose_ids.append(np.full(MAX_PERSONS, -1, dtype=np.int32))
+        pose_kp3d.append(np.full((MAX_PERSONS, n_kp, 3), np.nan, dtype=np.float32))
+        pose_conf.append(np.full(MAX_PERSONS, np.nan, dtype=np.float32))
+        pose_np.append(0)
 
     try:
         while True:
@@ -94,39 +144,65 @@ def process_svo(svo_path, outdir, depth_min, depth_max):
                 break
             if err != sl.ERROR_CODE.SUCCESS:
                 print(f"\n[Warning] grab() returned {repr(err)} at frame {frame_idx}, writing blank/NaN frame")
-                depth_f.write(nan_frame.tobytes())
+                pc_f.write(nan_frame.tobytes())
                 if writer is not None:
                     writer.write(blank_rgb)
                 timestamps_ns.append(timestamps_ns[-1] if timestamps_ns else 0)
+                if enable_pose:
+                    append_empty_pose()
                 frame_idx += 1
                 continue
 
             zed.retrieve_image(image_mat, sl.VIEW.LEFT, sl.MEM.CPU, display_res)
             zed.retrieve_measure(depth_mat, sl.MEASURE.DEPTH, sl.MEM.CPU, display_res)
+            if enable_pose:
+                zed.retrieve_bodies(bodies, body_runtime)
 
             rgb_bgr = cv2.cvtColor(image_mat.get_data(), cv2.COLOR_BGRA2BGR)
             if writer is not None:
                 writer.write(rgb_bgr)
-            depth_f.write(depth_mat.get_data().astype(np.float32).tobytes())
+
+            d = depth_mat.get_data().astype(np.float32)
+            xyz[..., 0] = u_off / fx * d
+            xyz[..., 1] = -(v_off / fy) * d
+            xyz[..., 2] = -d
+            pc_f.write(xyz.tobytes())
             timestamps_ns.append(zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds())
+
+            if enable_pose:
+                ids  = np.full(MAX_PERSONS, -1, dtype=np.int32)
+                kp3d = np.full((MAX_PERSONS, n_kp, 3), np.nan, dtype=np.float32)
+                conf = np.full(MAX_PERSONS, np.nan, dtype=np.float32)
+                for slot, body in enumerate(bodies.body_list[:MAX_PERSONS]):
+                    ids[slot]  = body.id
+                    kp3d[slot] = np.array(body.keypoint, dtype=np.float32)
+                    conf[slot] = body.confidence
+                pose_ids.append(ids)
+                pose_kp3d.append(kp3d)
+                pose_conf.append(conf)
+                pose_np.append(len(bodies.body_list))
 
             frame_idx += 1
             if frame_idx % 30 == 0:
                 print(f"\r[Processing] {frame_idx}/{n_expected} frames", end='', flush=True)
 
     finally:
-        depth_f.close()
+        pc_f.close()
         if writer is not None:
             writer.release()
         image_mat.free(sl.MEM.CPU)
         depth_mat.free(sl.MEM.CPU)
+        if enable_pose:
+            zed.disable_body_tracking()
+            zed.disable_positional_tracking()
         zed.close()
 
     print(f"\r[Processing] {frame_idx}/{n_expected} frames -- done")
 
-    meta_path = os.path.join(outdir, "depth_meta.npz")
+    meta_path = os.path.join(outdir, "pointcloud_meta.npz")
     np.savez_compressed(
         meta_path,
+        **frame_metadata,
         timestamps_ns = np.array(timestamps_ns, dtype=np.int64),
         height        = np.int32(H),
         width         = np.int32(W),
@@ -139,17 +215,36 @@ def process_svo(svo_path, outdir, depth_min, depth_max):
         svo_source    = os.path.basename(svo_path),
     )
 
-    depth_mb = os.path.getsize(depth_path) / 1e6
-    print(f"[Saved]      {depth_path}  ({depth_mb:.1f} MB, {frame_idx} frames)")
+    pc_mb = os.path.getsize(pc_path) / 1e6
+    print(f"[Saved]      {pc_path}  ({pc_mb:.1f} MB, {frame_idx} frames)")
     print(f"[Saved]      {meta_path}")
+
+    if enable_pose:
+        pose_path = os.path.join(outdir, "pose.npz")
+        np.savez_compressed(
+            pose_path,
+            **frame_metadata,
+            timestamps_ns   = np.array(timestamps_ns, dtype=np.int64),
+            n_persons       = np.array(pose_np, dtype=np.int32),
+            person_ids      = np.stack(pose_ids),
+            keypoints_3d    = np.stack(pose_kp3d),
+            body_confidence = np.stack(pose_conf),
+            body_format     = np.int32(n_kp),
+            svo_source      = os.path.basename(svo_path),
+        )
+        print(f"[Saved]      {pose_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Replay a recorded .svo2 offline through NEURAL depth mode.")
+    parser = argparse.ArgumentParser(description="Replay a recorded .svo2 offline through NEURAL depth mode, writing an organized per-pixel XYZ point cloud.")
     parser.add_argument('path', nargs='?', default=None,
                          help="svo_<ts>/ folder or recording.svo2 file. Omit for a file picker.")
     parser.add_argument('--depth-min', type=float, default=0.25, help="Minimum depth in metres (default 0.25)")
-    parser.add_argument('--depth-max', type=float, default=1.5, help="Maximum depth in metres (default 1.5)")
+    parser.add_argument('--depth-max', type=float, default=5.0, help="Maximum depth in metres (default 3.0)")
+    parser.add_argument('--no-pose', action='store_true',
+                         help="Skip ZED body tracking / pose.npz output (on by default)")
+    parser.add_argument('--body-format', choices=list(BODY_FORMAT_OPTIONS), default='BODY_38',
+                         help="ZED body tracking keypoint format (default BODY_38)")
     args = parser.parse_args()
 
     svo_path, outdir = resolve_svo_path(args.path)
@@ -157,7 +252,8 @@ def main():
         print("[Cancelled] No SVO selected.")
         sys.exit(1)
 
-    process_svo(svo_path, outdir, args.depth_min, args.depth_max)
+    process_svo(svo_path, outdir, args.depth_min, args.depth_max,
+                enable_pose=not args.no_pose, body_format=args.body_format)
 
 
 if __name__ == "__main__":

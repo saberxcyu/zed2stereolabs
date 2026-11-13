@@ -8,6 +8,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
 
@@ -25,16 +26,13 @@ def choose_csv_file():
 
 
 def load_roi_csv(path):
-    """Parse a select_roi.py CSV into:
+    """Parse a select_roi.py CSV (frame,roi,x,y,z,timestamp) into:
     - rois: ROI names in first-seen order
-    - series: {roi: (frames, avg_time, avg_value)}, one point per frame, averaged
+    - series: {roi: (frames, avg_time, avg_z)}, one point per frame, averaged
       over every point in that ROI/frame (multiple points per pixel-region
       selection collapse to a single value per frame here)
     - t0: earliest average timestamp across all ROIs, used to normalize every
       series to a shared zero
-    - value_col: 'z' (pointcloud.bin mode -- select_roi.py wrote x,y,z) or
-      'depth' (depth.bin mode -- select_roi.py wrote depth directly), detected
-      from the CSV header so this script works with either schema.
     """
     val_by_roi_frame = defaultdict(lambda: defaultdict(list))
     t_by_roi_frame   = defaultdict(lambda: defaultdict(list))
@@ -44,8 +42,7 @@ def load_roi_csv(path):
         reader = csv.reader(f)
         header = next(reader)
         col = {name: i for i, name in enumerate(header)}
-        value_col = 'z' if 'z' in col else 'depth'
-        roi_i, frame_i, val_i, ts_i = col['roi'], col['frame'], col[value_col], col['timestamp']
+        roi_i, frame_i, val_i, ts_i = col['roi'], col['frame'], col['z'], col['timestamp']
 
         for row in reader:
             roi = row[roi_i]
@@ -68,7 +65,7 @@ def load_roi_csv(path):
         all_ts.extend(avg_t)
 
     t0 = min(all_ts)
-    return rois, series, t0, value_col
+    return rois, series, t0
 
 
 def main():
@@ -82,26 +79,23 @@ def main():
         print("[Cancelled] No CSV selected.")
         sys.exit(1)
 
-    rois, series, t0, value_col = load_roi_csv(csv_path)
-    print(f"[Input] {csv_path}  (value column: {value_col})")
+    rois, series, t0 = load_roi_csv(csv_path)
+    print(f"[Input] {csv_path}")
 
     fig, ax = plt.subplots(figsize=(9, 5))
     for roi in rois:
-        frames, avg_t, avg_val = series[roi]
+        frames, avg_t, avg_z = series[roi]
         avg_t_s = [t - t0 for t in avg_t]
-        if value_col == 'z':
-            # point cloud Z = -depth (RIGHT_HANDED_Y_UP: forward objects are negative Z);
-            # flip back to positive distance-from-camera before plotting/inverting.
-            avg_depth = [-z for z in avg_val]
-        else:
-            # depth.bin values are already positive distance-from-camera.
-            avg_depth = avg_val
+        # point cloud Z = -depth (RIGHT_HANDED_Y_UP: forward objects are negative Z);
+        # flip back to positive distance-from-camera before plotting/inverting.
+        avg_depth = [-z for z in avg_z]
         for fr, t, d in zip(frames, avg_t_s, avg_depth):
             print(f"roi={roi:<12} frame={fr:>5}  time={t:.3f}s  avg_depth={d:.4f} m")
         ax.plot(avg_t_s, avg_depth, linewidth=1, label=roi)
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Depth (m) (inverted depth)")
+    ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     ax.invert_yaxis()
     ax.set_title("Average Depth Over Time")
     ax.grid(True, alpha=0.3)

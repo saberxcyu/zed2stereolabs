@@ -17,57 +17,39 @@ os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
 ROI_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-# basename -> (mode label, companion metadata file, channels per pixel)
-BIN_MODES = {
-    'depth.bin':      ('depth',      'depth_meta.npz',      1),
-    'pointcloud.bin':  ('pointcloud', 'pointcloud_meta.npz', 3),
-}
+CHANNELS = 3  # pointcloud.bin: XYZ per pixel
 
 
-def resolve_bin_path(arg):
-    """Accepts a depth.bin or pointcloud.bin file path directly, or None (Tk file picker)."""
+def resolve_folder(arg):
     if arg is None:
         root = tk.Tk()
         root.withdraw()
-        path = filedialog.askopenfilename(
-            title="Select depth.bin or pointcloud.bin",
-            initialdir=TOOLS_RECORDING_DIR,
-            filetypes=[("Bin files", "*.bin")],
-        )
+        folder = filedialog.askdirectory(title="Select recording folder", initialdir=TOOLS_RECORDING_DIR)
         root.destroy()
-        return path or None
-    if os.path.isfile(arg):
+        return folder or None
+    if os.path.isdir(arg):
         return arg
-    print(f"[Error] Not a file: {arg}")
+    print(f"[Error] Not a directory: {arg}")
     return None
 
 
-def select_roi(bin_path):
-    outdir   = os.path.dirname(os.path.abspath(bin_path))
-    basename = os.path.basename(bin_path)
-
-    if basename not in BIN_MODES:
-        print(f"[Error] Unrecognized file '{basename}' -- expected depth.bin or pointcloud.bin")
-        sys.exit(1)
-    mode, meta_name, channels = BIN_MODES[basename]
-    print(f"[Mode] {mode}  ({channels} channel{'s' if channels > 1 else ''} per pixel)")
-
-    meta_path = os.path.join(outdir, meta_name)
-    if not os.path.exists(meta_path):
-        print(f"[Error] {meta_path} not found alongside {bin_path}.")
+def select_roi(outdir):
+    bin_path  = os.path.join(outdir, "pointcloud.bin")
+    meta_path = os.path.join(outdir, "pointcloud_meta.npz")
+    if not os.path.exists(bin_path) or not os.path.exists(meta_path):
+        print(f"[Error] {bin_path} / {meta_path} not found -- run process.py first.")
         sys.exit(1)
 
     meta = np.load(meta_path)
     H, W = int(meta['height']), int(meta['width'])
     timestamps_ns = meta['timestamps_ns']
-    frame_bytes = H * W * channels * 4
+    frame_bytes = H * W * CHANNELS * 4
     n_frames = os.path.getsize(bin_path) // frame_bytes
     if n_frames == 0:
-        print("[Error] .bin file has zero complete frames.")
+        print("[Error] pointcloud.bin has zero complete frames.")
         sys.exit(1)
 
-    shape = (n_frames, H, W) if channels == 1 else (n_frames, H, W, channels)
-    data = np.memmap(bin_path, dtype=np.float32, mode='r', shape=shape)
+    data = np.memmap(bin_path, dtype=np.float32, mode='r', shape=(n_frames, H, W, CHANNELS))
     print(f"[Loaded] {bin_path}  ({n_frames} frames, {W}x{H})")
     print(f"[Loaded] {meta_path}")
 
@@ -107,7 +89,7 @@ def select_roi(bin_path):
     exported = [False]
 
     fig = plt.figure(figsize=(10, 8))
-    fig.canvas.manager.set_window_title(f"Select ROIs [{mode}] - {outdir}")
+    fig.canvas.manager.set_window_title(f"Select ROIs - {outdir}")
 
     ax_frame  = fig.add_axes([0.08, 0.15, 0.86, 0.78])
     ax_play   = fig.add_axes([0.02, 0.035, 0.06, 0.065])
@@ -250,32 +232,22 @@ def select_roi(bin_path):
             return
         csv_path = os.path.join(outdir, "roi.csv")
         total_rows = 0
-        print(f"[Exporting] mode={mode} -> {csv_path}")
+        print(f"[Exporting] -> {csv_path}")
         with open(csv_path, 'w', newline='') as f:
-            if mode == 'depth':
-                f.write("frame,roi,depth,timestamp\n")
-            else:
-                f.write("frame,roi,x,y,z,timestamp\n")
+            f.write("frame,roi,x,y,z,timestamp\n")
             for frame in range(n_frames):
                 frame_data = data[frame]
                 ts_s = timestamps_ns[frame] / 1e9   # raw Unix-epoch seconds; plot.py normalizes to t0
                 for roi in rois:
-                    if mode == 'depth':
-                        vals  = frame_data[roi['rows'], roi['cols']]
-                        valid = np.isfinite(vals)
-                        for d in vals[valid]:
-                            f.write(f"{frame},{roi['name']},{d:.5f},{ts_s:.6f}\n")
-                            total_rows += 1
-                    else:
-                        pts   = frame_data[roi['rows'], roi['cols'], :]
-                        valid = np.all(np.isfinite(pts), axis=1)
-                        for x, y, z in pts[valid]:
-                            f.write(f"{frame},{roi['name']},{x:.5f},{y:.5f},{z:.5f},{ts_s:.6f}\n")
-                            total_rows += 1
+                    pts   = frame_data[roi['rows'], roi['cols'], :]
+                    valid = np.all(np.isfinite(pts), axis=1)
+                    for x, y, z in pts[valid]:
+                        f.write(f"{frame},{roi['name']},{x:.5f},{y:.5f},{z:.5f},{ts_s:.6f}\n")
+                        total_rows += 1
                 if (frame + 1) % 30 == 0 or frame == n_frames - 1:
                     print(f"\r[Exporting] {frame + 1}/{n_frames} frames", end='', flush=True)
         print()
-        print(f"[Saved] {csv_path}  ({total_rows} rows, {len(rois)} ROIs, mode={mode})")
+        print(f"[Saved] {csv_path}  ({total_rows} rows, {len(rois)} ROIs)")
         exported[0] = True
         plt.close(fig)
 
@@ -296,17 +268,17 @@ def select_roi(bin_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Interactive 2D ROI selection over a depth.bin or pointcloud.bin file, exporting to CSV.")
+    parser = argparse.ArgumentParser(description="Interactive 2D ROI selection over a recording's pointcloud.bin, exporting to CSV.")
     parser.add_argument('path', nargs='?', default=None,
-                         help="Path to depth.bin or pointcloud.bin. Omit for a file picker.")
+                         help="Recording folder (containing pointcloud.bin). Omit for a folder picker.")
     args = parser.parse_args()
 
-    bin_path = resolve_bin_path(args.path)
-    if bin_path is None:
-        print("[Cancelled] No file selected.")
+    outdir = resolve_folder(args.path)
+    if outdir is None:
+        print("[Cancelled] No folder selected.")
         sys.exit(1)
 
-    select_roi(bin_path)
+    select_roi(outdir)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ def pose_record_mode(resolution, body_format):
 
     camera_info = zed.get_camera_information()
     camera_res  = camera_info.camera_configuration.resolution
+    camera_fps  = camera_info.camera_configuration.fps
     display_res = sl.Resolution(
         min(camera_res.width, 1280),
         min(camera_res.height, 720),
@@ -114,7 +115,7 @@ def pose_record_mode(resolution, body_format):
                         ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
                         outdir = os.path.join(RECORDING_DIR, f"pose_{ts}")
                         os.makedirs(outdir, exist_ok=True)
-                        writer             = create_video_writer(display_res, outdir)
+                        writer             = create_video_writer(display_res, outdir, camera_fps)
                         pose_frames_ids    = []
                         pose_frames_kp3d   = []
                         pose_frames_conf   = []

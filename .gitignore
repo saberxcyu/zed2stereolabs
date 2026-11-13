@@ -1,20 +1,48 @@
 # Python-generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.whl
 
 # Virtual environments
-.venv
+.venv/
+venv/
 
-# Video recordings
-software/recordings/
-software/tools/recordings/
-software/tools/data collection/recordings/
-raspberry_pi/recordings/
+# Python tooling caches and coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
 
+# Camera recordings and derived pipeline outputs (at any depth)
+recordings/
 
-# whl files
-*.whl
+# Ultralytics prediction / training outputs (at any depth)
+runs/
+
+# Model checkpoints (gated manual downloads and auto-downloaded weights alike)
+/software/tools/data collection/models/
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Local environment variables (keep shareable templates)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Editor and operating-system temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -89,7 +89,7 @@ def record_mode(resolution_option, compression_type=sl.SVO_COMPRESSION_MODE.H264
 
                 if key == ord('s'):
                     if not recording:
-                        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        ts       = datetime.now().strftime("%Y%m%d_%H%M%S.%f")
                         outdir   = os.path.join(TOOLS_RECORDING_DIR, f"svo_{ts}")
                         os.makedirs(outdir, exist_ok=True)
                         svo_path = os.path.join(outdir, "recording.svo2")

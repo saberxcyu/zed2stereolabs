@@ -19,6 +19,7 @@ def depth_record_mode(min_depth, max_depth, resolution):
         sys.exit(1)
 
     display_res = get_display_resolution(zed)
+    camera_fps  = zed.get_camera_information().camera_configuration.fps
     measure     = sl.MEASURE.DEPTH
 
     print(f"[Depth] range [{min_depth}, {max_depth}] m")
@@ -81,7 +82,7 @@ def depth_record_mode(min_depth, max_depth, resolution):
                         ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
                         outdir = os.path.join(RECORDING_DIR, f"depth_{ts}")
                         os.makedirs(outdir, exist_ok=True)
-                        writer       = create_video_writer(display_res, outdir)
+                        writer       = create_video_writer(display_res, outdir, camera_fps)
                         depth_frames = []
                         timestamps   = []
                         t_start      = None

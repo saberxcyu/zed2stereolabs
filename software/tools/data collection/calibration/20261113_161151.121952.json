@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-11-13T21:11:51.120608+00:00",
+  "camera_serial": 29311469,
+  "sdk_version": "5.3.0",
+  "units": "metres",
+  "camera_frame": "RIGHT_HANDED_Y_UP",
+  "world_frame": "RIGHT_HANDED_Z_UP_X_FORWARD",
+  "transform_convention": "column vectors: p_world = T_world_from_camera @ p_camera",
+  "T_world_from_camera": [
+    [
+      -0.00011552144133020192,
+      -0.06472467631101608,
+      -0.9979031085968018,
+      0.0
+    ],
+    [
+      -0.9999712109565735,
+      -0.0075609758496284485,
+      0.000606170913670212,
+      0.0
+    ],
+    [
+      -0.0075843557715415955,
+      0.9978744983673096,
+      -0.06472193449735641,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_sdk_world_from_camera": [
+    [
+      0.9999712109565735,
+      0.0075609758496284485,
+      -0.000606170913670212,
+      0.0
+    ],
+    [
+      -0.0075843557715415955,
+      0.9978744983673096,
+      -0.06472193449735641,
+      0.0
+    ],
+    [
+      0.00011552144133020192,
+      0.06472467631101608,
+      0.9979031085968018,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "tilt_degrees": {
+    "pitch_up_deg": 3.7108876077465767,
+    "roll_right_up_deg": -0.435468798276023,
+    "total_tilt_deg": 3.7363156557434474
+  },
+  "tilt_convention": "pitch positive looking up; roll positive image-right up; total angle camera +Y to world +Z",
+  "method": "zed_sdk_gravity_static",
+  "stationary_camera_required": true,
+  "world_origin": "camera_centre",
+  "heading_reference": "sdk_initial_yaw",
+  "floor_height_estimated": false,
+  "tracking_settings": {
+    "enable_imu_fusion": true,
+    "set_gravity_as_origin": true,
+    "set_floor_as_origin": false,
+    "set_as_static": true
+  },
+  "resolution": [
+    2208,
+    1242
+  ],
+  "rectified_intrinsics": {
+    "fx": 1059.9261474609375,
+    "fy": 1059.9261474609375,
+    "cx": 1116.638427734375,
+    "cy": 611.2127075195312
+  },
+  "quality": {
+    "continuous_ok_frames": 78,
+    "translation_span_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "pose_held_static": true,
+    "readiness_only": true,
+    "independently_validated": false
+  }
+}

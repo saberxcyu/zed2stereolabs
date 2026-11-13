@@ -350,10 +350,10 @@ def get_display_resolution(zed):
     return zed.get_camera_information().camera_configuration.resolution
 
 
-def create_video_writer(display_res, outdir):
+def create_video_writer(display_res, outdir, fps):
     video_path = os.path.join(outdir, "video.mp4")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(video_path, fourcc, 30.0, (display_res.width, display_res.height), True)
+    writer = cv2.VideoWriter(video_path, fourcc, fps, (display_res.width, display_res.height), True)
     if not writer.isOpened():
         print(f"[Warning] Could not open VideoWriter for {video_path}. Video recording disabled.")
         return None
