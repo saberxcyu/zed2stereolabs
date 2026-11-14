@@ -36,8 +36,10 @@ POSE_WINDOW_NAME = "ZED Pose Tracker  |  RGB (left)  +  Skeleton (right)"
 
 RESOLUTION_OPTIONS = [
     ("HD2K",   sl.RESOLUTION.HD2K,   2208, 1242, 15),
+    ("HD1200", sl.RESOLUTION.HD1200, 1920, 1200, 30),
     ("HD1080", sl.RESOLUTION.HD1080, 1920, 1080, 30),
     ("HD720",  sl.RESOLUTION.HD720,  1280,  720, 30),
+    ("SVGA",   sl.RESOLUTION.SVGA,    960,  600, 60),
     ("VGA",    sl.RESOLUTION.VGA,     672,  376, 30),
 ]
 

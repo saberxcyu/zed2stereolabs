@@ -11,11 +11,20 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "pip>=26.1",
     "pyopengl>=3.1.7",
-    "pyzed==5.3",
+    "pyzed>=5.3",
     "requests>=2.33.1",
     "ultralytics>=8.3.237",
 ]
 
+[tool.uv]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
 [tool.uv.sources]
-pyzed = { url = "https://download.stereolabs.com/zedsdk/5.3/whl/linux_x86_64/pyzed-5.3-cp310-cp310-linux_x86_64.whl" }
+pyzed = [
+    { url = "https://download.stereolabs.com/zedsdk/5.5/whl/linux_aarch64/pyzed-5.5-cp310-cp310-linux_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { url = "https://download.stereolabs.com/zedsdk/5.3/whl/linux_x86_64/pyzed-5.3-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
 
