@@ -1,6 +1,9 @@
 import sys
 import os
+import glob
+import json
 import argparse
+import contextlib
 from calibrate import load_calibration, calibration_metadata
 
 import cv2
@@ -13,7 +16,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from _common import get_display_resolution, create_video_writer
 
 TOOLS_RECORDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
+CALIBRATION_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration')
 os.makedirs(TOOLS_RECORDING_DIR, exist_ok=True)
+
+SYNC_TOLERANCE_NS = 5_000_000  # 5 ms max delta for hardware-synced frame pairing
+
+
+@contextlib.contextmanager
+def _suppress_c_output():
+    """Silence C-level stdout/stderr (e.g. Jetson NvMMLite decoder chatter) around open/close."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+        os.close(devnull_fd)
 
 MAX_PERSONS = 10  # array-sizing limit, not a ZED SDK model limit -- matches _pose_record.py
 BODY_FORMAT_OPTIONS = {
@@ -23,37 +47,168 @@ BODY_FORMAT_OPTIONS = {
 }
 
 
-def resolve_svo_path(arg):
-    """Accepts a svo_<ts>/ folder, a recording.svo2 file, or None (Tk file picker).
-    Returns (svo_path, outdir) or (None, None) if cancelled."""
+def load_latest_zed360_calibration(calib_dir=CALIBRATION_DIR):
+    """Load the latest zed360_*.json calibration file.
+    Returns (poses_by_serial, ref_serial, filename) or (None, None, None)."""
+    candidates = sorted(glob.glob(os.path.join(calib_dir, "zed360_*.json")))
+    if not candidates:
+        return None, None, None
+
+    latest_path = candidates[-1]
+    with open(latest_path, "r") as f:
+        raw = json.load(f)
+
+    poses_by_serial = {}
+    for key, entry in raw.items():
+        cfg = entry.get("FusionConfiguration", {})
+        sn = int(cfg.get("serial_number", key))
+        pose_vals = np.fromstring(cfg["pose"], sep=" ", dtype=np.float64)
+        if pose_vals.size != 16:
+            raise ValueError(f"Invalid pose matrix for serial {sn} in {latest_path}")
+        poses_by_serial[sn] = pose_vals.reshape(4, 4)
+
+    if not poses_by_serial:
+        return None, None, None
+
+    # Reference camera is the one whose rotation is closest to identity.
+    ref_serial = min(
+        poses_by_serial,
+        key=lambda sn: float(np.linalg.norm(poses_by_serial[sn][:3, :3] - np.eye(3))),
+    )
+    return poses_by_serial, ref_serial, os.path.basename(latest_path)
+
+
+def resolve_svo_inputs(arg):
+    """Accepts a folder of .svo2 file(s), a single .svo2 file, or None (Tk picker).
+    Returns a list of (svo_path, outdir) pairs, or None if cancelled/invalid."""
     if arg is None:
         root = tk.Tk()
         root.withdraw()
-        path = filedialog.askopenfilename(
-            title="Select recording.svo2",
+        folder = filedialog.askdirectory(
+            title="Select recording folder (or Cancel to pick a single .svo2 file)",
             initialdir=TOOLS_RECORDING_DIR,
-            filetypes=[("SVO2 files", "*.svo2")],
         )
-        root.destroy()
-        if not path:
-            return None, None
-        return path, os.path.dirname(path)
+        if folder:
+            root.destroy()
+            arg = folder
+        else:
+            path = filedialog.askopenfilename(
+                title="Select a single .svo2 file",
+                initialdir=TOOLS_RECORDING_DIR,
+                filetypes=[("SVO2 files", "*.svo2")],
+            )
+            root.destroy()
+            if not path:
+                return None
+            return [(path, os.path.dirname(os.path.abspath(path)))]
 
     if os.path.isdir(arg):
-        svo_path = os.path.join(arg, "recording.svo2")
-        if not os.path.exists(svo_path):
-            print(f"[Error] No recording.svo2 in {arg}")
-            return None, None
-        return svo_path, arg
+        svos = sorted(glob.glob(os.path.join(arg, "*.svo2")))
+        if not svos:
+            print(f"[Error] No .svo2 files found in {arg}")
+            return None
+        if len(svos) == 1:
+            return [(svos[0], arg)]
+        return [(p, os.path.join(arg, os.path.splitext(os.path.basename(p))[0])) for p in svos]
 
     if os.path.isfile(arg):
-        return arg, os.path.dirname(os.path.abspath(arg))
+        return [(arg, os.path.dirname(os.path.abspath(arg)))]
 
     print(f"[Error] Path not found: {arg}")
-    return None, None
+    return None
 
 
-def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format):
+def read_svo_timestamps(svo_path):
+    """Fast pass with DEPTH_MODE.NONE to extract (serial, timestamps_ns) from an .svo2."""
+    init = sl.InitParameters()
+    init.set_from_svo_file(svo_path)
+    init.depth_mode = sl.DEPTH_MODE.NONE
+    init.sdk_verbose = 0
+
+    zed = sl.Camera()
+    with _suppress_c_output():
+        status = zed.open(init)
+    if status != sl.ERROR_CODE.SUCCESS:
+        print(f"[Error] Could not open {svo_path}: {repr(status)}")
+        sys.exit(1)
+
+    serial = int(zed.get_camera_information().serial_number)
+    runtime = sl.RuntimeParameters()
+    timestamps_ns = []
+    try:
+        while True:
+            err = zed.grab(runtime)
+            if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
+                break
+            if err == sl.ERROR_CODE.SUCCESS:
+                timestamps_ns.append(zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds())
+            else:
+                timestamps_ns.append(timestamps_ns[-1] if timestamps_ns else 0)
+    finally:
+        with _suppress_c_output():
+            zed.close()
+
+    return serial, np.array(timestamps_ns, dtype=np.int64)
+
+
+def compute_synced_frame_indices(svo_paths, ref_serial=None, max_dt_ns=SYNC_TOLERANCE_NS):
+    """Align N .svo2 files by nearest IMAGE timestamp within max_dt_ns.
+    Returns {svo_path: set_of_raw_frame_indices}."""
+    print(f"[Sync] Reading timestamps from {len(svo_paths)} SVO2 files...")
+    ts_by_svo = {}
+    serial_by_svo = {}
+    for p in svo_paths:
+        sn, ts = read_svo_timestamps(p)
+        ts_by_svo[p] = ts
+        serial_by_svo[p] = sn
+        print(f"  {os.path.basename(p)} (SN={sn}): {len(ts)} frames")
+
+    ref_svo = next((p for p, sn in serial_by_svo.items() if sn == ref_serial), svo_paths[0])
+    ts_ref = ts_by_svo[ref_svo]
+
+    # For each other camera, find the nearest frame index to each ref frame.
+    matched_idx_by_svo = {ref_svo: np.arange(len(ts_ref), dtype=np.int64)}
+    dt_by_svo = {}
+    valid_mask = np.ones(len(ts_ref), dtype=bool)
+
+    for p in svo_paths:
+        if p == ref_svo:
+            continue
+        ts_cam = ts_by_svo[p]
+        if len(ts_cam) == 0:
+            valid_mask[:] = False
+            matched_idx_by_svo[p] = np.full(len(ts_ref), -1, dtype=np.int64)
+            dt_by_svo[p] = np.full(len(ts_ref), max_dt_ns + 1, dtype=np.int64)
+            continue
+
+        pos = np.searchsorted(ts_cam, ts_ref)
+        left = np.clip(pos - 1, 0, len(ts_cam) - 1)
+        right = np.clip(pos, 0, len(ts_cam) - 1)
+        dt_left = np.abs(ts_cam[left] - ts_ref)
+        dt_right = np.abs(ts_cam[right] - ts_ref)
+        use_right = dt_right < dt_left
+        best_idx = np.where(use_right, right, left)
+        best_dt = np.where(use_right, dt_right, dt_left)
+
+        valid_mask &= (best_dt <= max_dt_ns)
+        matched_idx_by_svo[p] = best_idx
+        dt_by_svo[p] = best_dt
+
+    kept_ref = np.where(valid_mask)[0]
+    keep_sets = {p: set(matched_idx_by_svo[p][kept_ref].tolist()) for p in svo_paths}
+    print(f"[Sync] Kept {len(kept_ref)}/{len(ts_ref)} synchronized frames (ref SN={serial_by_svo[ref_svo]})")
+    if len(kept_ref) > 0:
+        for p in svo_paths:
+            if p == ref_svo:
+                continue
+            dts_ms = dt_by_svo[p][kept_ref] / 1e6
+            print(f"  SN={serial_by_svo[p]} sync offset: mean={dts_ms.mean():.3f} ms, p95={np.percentile(dts_ms, 95):.3f} ms, max={dts_ms.max():.3f} ms")
+    return keep_sets
+
+
+def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format,
+                zed360_calib=None, keep_indices=None):
+    os.makedirs(outdir, exist_ok=True)
     init = sl.InitParameters()
     init.set_from_svo_file(svo_path)
     init.depth_mode             = sl.DEPTH_MODE.NEURAL
@@ -62,22 +217,45 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
     init.depth_minimum_distance = depth_min
     init.depth_maximum_distance = depth_max
     init.depth_stabilization    = True
+    init.sdk_verbose            = 0
     # svo_real_time_mode left at its default (False) -- replay as fast as NEURAL inference allows.
 
     zed = sl.Camera()
-    status = zed.open(init)
+    with _suppress_c_output():
+        status = zed.open(init)
     if status != sl.ERROR_CODE.SUCCESS:
         print(f"[Error] Could not open {svo_path}: {repr(status)}")
         sys.exit(1)
 
-    calibration_path = os.path.join(outdir, "calibration.json")
-    try:
-        calibration = load_calibration(calibration_path, zed.get_camera_information().serial_number) if os.path.exists(calibration_path) else None
-    except Exception:
-        zed.close()
-        raise
-    frame_metadata = calibration_metadata(calibration)
-    print("[Calibration] " + ("Loaded; XYZ remains camera-space, world transform saved in metadata" if calibration else "Absent: camera-space baseline"))
+    serial = int(zed.get_camera_information().serial_number)
+    poses_by_serial, ref_serial, calib_filename = zed360_calib if zed360_calib else (None, None, None)
+
+    if poses_by_serial is not None and serial in poses_by_serial:
+        T_world_from_cam = poses_by_serial[serial]
+        T_world_from_ref = poses_by_serial[ref_serial]
+        T_ref_from_cam = np.linalg.inv(T_world_from_ref) @ T_world_from_cam
+        frame_metadata = dict(
+            pointcloud_frame="RIGHT_HANDED_Y_UP",
+            coordinate_units="metres",
+            calibration_available=True,
+            zed360_calibration_available=True,
+            calibration_file=calib_filename,
+            camera_serial=np.int64(serial),
+            reference_serial=np.int64(ref_serial),
+            T_world_from_camera=T_world_from_cam,
+            T_ref_from_camera=T_ref_from_cam,
+        )
+        print(f"[Calibration] ZED360 ({calib_filename}) matched SN={serial} (ref SN={ref_serial})")
+    else:
+        calibration_path = os.path.join(outdir, "calibration.json")
+        try:
+            calibration = load_calibration(calibration_path, serial) if os.path.exists(calibration_path) else None
+        except Exception:
+            zed.close()
+            raise
+        frame_metadata = calibration_metadata(calibration)
+        frame_metadata["camera_serial"] = np.int64(serial)
+        print("[Calibration] " + ("Loaded; XYZ remains camera-space, world transform saved in metadata" if calibration else "Absent: camera-space baseline"))
 
     body_runtime = None
     n_kp = None
@@ -124,7 +302,8 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
     depth_mat = sl.Mat()
     bodies    = sl.Bodies() if enable_pose else None
     timestamps_ns = []
-    frame_idx = 0
+    raw_idx = 0
+    written_idx = 0
     xyz        = np.empty((H, W, 3), dtype=np.float32)
     nan_frame  = np.full((H, W, 3), np.nan, dtype=np.float32)
     blank_rgb  = np.zeros((H, W, 3), np.uint8)
@@ -142,15 +321,21 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
             err = zed.grab(runtime)
             if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
                 break
+
+            if keep_indices is not None and raw_idx not in keep_indices:
+                raw_idx += 1
+                continue
+
             if err != sl.ERROR_CODE.SUCCESS:
-                print(f"\n[Warning] grab() returned {repr(err)} at frame {frame_idx}, writing blank/NaN frame")
+                print(f"\n[Warning] grab() returned {repr(err)} at frame {raw_idx}, writing blank/NaN frame")
                 pc_f.write(nan_frame.tobytes())
                 if writer is not None:
                     writer.write(blank_rgb)
                 timestamps_ns.append(timestamps_ns[-1] if timestamps_ns else 0)
                 if enable_pose:
                     append_empty_pose()
-                frame_idx += 1
+                raw_idx += 1
+                written_idx += 1
                 continue
 
             zed.retrieve_image(image_mat, sl.VIEW.LEFT, sl.MEM.CPU, display_res)
@@ -182,9 +367,10 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
                 pose_conf.append(conf)
                 pose_np.append(len(bodies.body_list))
 
-            frame_idx += 1
-            if frame_idx % 30 == 0:
-                print(f"\r[Processing] {frame_idx}/{n_expected} frames", end='', flush=True)
+            raw_idx += 1
+            written_idx += 1
+            if written_idx % 30 == 0:
+                print(f"\r[Processing] {raw_idx}/{n_expected} frames (kept {written_idx})", end='', flush=True)
 
     finally:
         pc_f.close()
@@ -195,9 +381,10 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
         if enable_pose:
             zed.disable_body_tracking()
             zed.disable_positional_tracking()
-        zed.close()
+        with _suppress_c_output():
+            zed.close()
 
-    print(f"\r[Processing] {frame_idx}/{n_expected} frames -- done")
+    print(f"\r[Processing] {raw_idx}/{n_expected} frames (kept {written_idx}) -- done")
 
     meta_path = os.path.join(outdir, "pointcloud_meta.npz")
     np.savez_compressed(
@@ -216,7 +403,7 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
     )
 
     pc_mb = os.path.getsize(pc_path) / 1e6
-    print(f"[Saved]      {pc_path}  ({pc_mb:.1f} MB, {frame_idx} frames)")
+    print(f"[Saved]      {pc_path}  ({pc_mb:.1f} MB, {written_idx} frames)")
     print(f"[Saved]      {meta_path}")
 
     if enable_pose:
@@ -241,19 +428,33 @@ def main():
                          help="svo_<ts>/ folder or recording.svo2 file. Omit for a file picker.")
     parser.add_argument('--depth-min', type=float, default=0.25, help="Minimum depth in metres (default 0.25)")
     parser.add_argument('--depth-max', type=float, default=5.0, help="Maximum depth in metres (default 3.0)")
-    parser.add_argument('--no-pose', action='store_true',
-                         help="Skip ZED body tracking / pose.npz output (on by default)")
+    parser.add_argument('--pose', action='store_true',
+                         help="Enable ZED body tracking / pose.npz output (off by default)")
     parser.add_argument('--body-format', choices=list(BODY_FORMAT_OPTIONS), default='BODY_38',
                          help="ZED body tracking keypoint format (default BODY_38)")
     args = parser.parse_args()
 
-    svo_path, outdir = resolve_svo_path(args.path)
-    if svo_path is None:
+    inputs = resolve_svo_inputs(args.path)
+    if not inputs:
         print("[Cancelled] No SVO selected.")
         sys.exit(1)
 
-    process_svo(svo_path, outdir, args.depth_min, args.depth_max,
-                enable_pose=not args.no_pose, body_format=args.body_format)
+    zed360_calib = load_latest_zed360_calibration()
+    ref_serial = zed360_calib[1]
+
+    if len(inputs) > 1:
+        keep_sets = compute_synced_frame_indices([p for p, _ in inputs], ref_serial=ref_serial)
+    else:
+        keep_sets = {inputs[0][0]: None}
+
+    for idx, (svo_path, outdir) in enumerate(inputs, 1):
+        if len(inputs) > 1:
+            print(f"\n=== Camera {idx}/{len(inputs)}: {os.path.basename(svo_path)} ===")
+        process_svo(
+            svo_path, outdir, args.depth_min, args.depth_max,
+            enable_pose=args.pose, body_format=args.body_format,
+            zed360_calib=zed360_calib, keep_indices=keep_sets[svo_path],
+        )
 
 
 if __name__ == "__main__":

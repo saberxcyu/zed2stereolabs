@@ -407,7 +407,6 @@ def start_recording_session(workers, compression_name, res_name, target_fps):
         svo_paths.append((w, fname, svo_path))
 
     session_meta = {
-        "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "resolution": res_name,
         "target_fps": int(target_fps),
