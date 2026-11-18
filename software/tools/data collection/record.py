@@ -5,6 +5,7 @@ import math
 import shutil
 import time
 import argparse
+import contextlib
 import threading
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -28,6 +29,39 @@ SVO_COMPRESSION_OPTIONS = {
     "H265":     sl.SVO_COMPRESSION_MODE.H265,
     "LOSSLESS": sl.SVO_COMPRESSION_MODE.LOSSLESS,
 }
+
+CAMERA_NAMES = {
+    40932664: "phoenix",   # Reference camera
+    41248751: "tortoise",  # Across from phoenix (-Z)
+    48029520: "dragon",    # Left of phoenix (-X)
+    44577743: "tiger",     # Right of phoenix (+X)
+}
+
+
+def camera_name(serial: int) -> str:
+    return CAMERA_NAMES.get(int(serial), f"cam_{int(serial)}")
+
+
+def camera_label(serial: int) -> str:
+    return f"{camera_name(serial)} ({int(serial)})"
+
+
+@contextlib.contextmanager
+def _suppress_c_output():
+    """Silence C-level stdout/stderr (e.g. Jetson NVENC / NvMMLite chatter) around ZED calls."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+        os.close(devnull_fd)
 
 
 class CameraWorker:
@@ -111,17 +145,20 @@ class CameraWorker:
         rec_params = sl.RecordingParameters()
         rec_params.video_filename = svo_path
         rec_params.compression_mode = SVO_COMPRESSION_OPTIONS[compression_name]
-        with self.op_lock:
+        with self.op_lock, _suppress_c_output():
             err = self.zed.enable_recording(rec_params)
+            if err == sl.ERROR_CODE.SUCCESS:
+                # Trigger first grab inside _suppress_c_output to silence lazy "NvVideo: bBlitMode" init log
+                self.zed.grab(sl.RuntimeParameters())
             return None if err == sl.ERROR_CODE.SUCCESS else repr(err)
 
     def disable_recording(self):
-        with self.op_lock:
+        with self.op_lock, _suppress_c_output():
             self.zed.disable_recording()
 
     def close(self):
         self.stop()
-        with self.op_lock:
+        with self.op_lock, _suppress_c_output():
             self.zed.close()
 
 
@@ -129,12 +166,19 @@ def _worker_proc(serial: int, res_name: str, target_fps: int, tile_w: int, tile_
                  enable_preview: bool, preview_stride: int,
                  cmd_q, ack_q, shm_name, shm_lock, fps_val, has_frame):
     """Subprocess entry point: owns one ZED camera so NVENC/NvMedia2D contexts stay isolated."""
+    # Silence C-level NVENC/V4L2 chatter (bBlitMode, dqthread timeouts) in worker subprocesses
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull_fd, 1)
+    os.dup2(devnull_fd, 2)
+    os.close(devnull_fd)
+
     res_enum = next(opt[1] for opt in RESOLUTION_OPTIONS if opt[0] == res_name)
     init = sl.InitParameters()
     init.set_from_serial_number(serial)
     init.camera_resolution = res_enum
     init.camera_fps = target_fps
     init.depth_mode = sl.DEPTH_MODE.NONE
+    init.sdk_verbose = 0
 
     zed = sl.Camera()
     status = zed.open(init)
@@ -330,11 +374,13 @@ def open_workers(devs, res_name: str, res_enum, target_fps: int, enable_preview:
             init.camera_resolution = res_enum
             init.camera_fps = target_fps
             init.depth_mode = sl.DEPTH_MODE.NONE
+            init.sdk_verbose = 0
 
             zed = sl.Camera()
-            status = zed.open(init)
+            with _suppress_c_output():
+                status = zed.open(init)
             if status != sl.ERROR_CODE.SUCCESS:
-                print(f"[Error] Failed to open SN={sn} ({model_name}): {repr(status)}")
+                print(f"[Error] Failed to open {camera_label(sn)} ({model_name}): {repr(status)}")
                 for w in workers:
                     w.close()
                 return None
@@ -351,12 +397,12 @@ def open_workers(devs, res_name: str, res_enum, target_fps: int, enable_preview:
                     enable_preview=enable_preview, preview_stride=preview_stride,
                 )
             except Exception as exc:
-                print(f"[Error] Failed to open SN={sn} ({model_name}): {exc}")
+                print(f"[Error] Failed to open {camera_label(sn)} ({model_name}): {exc}")
                 for w in workers:
                     w.close()
                 return None
 
-        print(f"[Opened]    [{idx}] {model_name} SN={sn} ({worker.width}x{worker.height} @ {worker.fps:.0f} fps)")
+        print(f"[Opened]    [{idx}] {camera_label(sn)} {model_name} ({worker.width}x{worker.height} @ {worker.fps:.0f} fps)")
         workers.append(worker)
 
     return workers
@@ -379,7 +425,7 @@ def build_grid(workers, tile_w=640, tile_h=400):
             tile = frame if (frame.shape[1] == tile_w and frame.shape[0] == tile_h) else cv2.resize(
                 frame, (tile_w, tile_h), interpolation=cv2.INTER_AREA
             )
-        label = f"camera {idx + 1} SN={w.serial}"
+        label = camera_label(w.serial)
         cv2.putText(tile, label, (10, tile_h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
         canvas[y0:y0 + tile_h, x0:x0 + tile_w] = tile
 
@@ -394,11 +440,11 @@ def start_recording_session(workers, compression_name, res_name, target_fps):
     svo_paths = []
     started = []
     for w in workers:
-        fname = "recording.svo2" if len(workers) == 1 else f"cam_{w.serial}.svo2"
+        fname = "recording.svo2" if len(workers) == 1 else f"{camera_name(w.serial)}.svo2"
         svo_path = os.path.join(outdir, fname)
         err_msg = w.enable_recording(svo_path, compression_name)
         if err_msg is not None:
-            print(f"[Error]     Could not start SVO recording on SN={w.serial}: {err_msg}")
+            print(f"[Error]     Could not start SVO recording on {camera_label(w.serial)}: {err_msg}")
             for sw in started:
                 sw.disable_recording()
             shutil.rmtree(outdir, ignore_errors=True)
@@ -414,6 +460,7 @@ def start_recording_session(workers, compression_name, res_name, target_fps):
         "cameras": [
             {
                 "index": w.index,
+                "name": camera_name(w.serial),
                 "serial_number": w.serial,
                 "model": w.model_name,
                 "width": w.width,

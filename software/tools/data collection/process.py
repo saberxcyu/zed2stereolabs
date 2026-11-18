@@ -46,36 +46,57 @@ BODY_FORMAT_OPTIONS = {
     "BODY_38": (sl.BODY_FORMAT.BODY_38, 38),
 }
 
+CAMERA_NAMES = {
+    40932664: "phoenix",   # Reference camera
+    41248751: "tortoise",  # Across from phoenix (-Z)
+    48029520: "dragon",    # Left of phoenix (-X)
+    44577743: "tiger",     # Right of phoenix (+X)
+}
+
+
+def camera_name(serial: int) -> str:
+    return CAMERA_NAMES.get(int(serial), f"cam_{int(serial)}")
+
+
+def camera_label(serial: int) -> str:
+    return f"{camera_name(serial)} ({int(serial)})"
+
+
+def _svo_stem_to_folder_name(stem: str) -> str:
+    if stem.startswith("cam_") and stem[4:].isdigit():
+        return camera_name(int(stem[4:]))
+    if stem.isdigit():
+        return camera_name(int(stem))
+    return stem
+
 
 def load_latest_zed360_calibration(calib_dir=CALIBRATION_DIR):
-    """Load the latest zed360_*.json calibration file.
-    Returns (poses_by_serial, ref_serial, filename) or (None, None, None)."""
+    """Load the latest zed360_*.json calibration file in RIGHT_HANDED_Y_UP (metres).
+    Returns (poses_by_serial, override_gravity_by_serial, ref_serial, filename) or (None, None, None, None)."""
     candidates = sorted(glob.glob(os.path.join(calib_dir, "zed360_*.json")))
     if not candidates:
-        return None, None, None
+        return None, None, None, None
 
     latest_path = candidates[-1]
-    with open(latest_path, "r") as f:
-        raw = json.load(f)
+    configs = sl.read_fusion_configuration_file(
+        latest_path, sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP, sl.UNIT.METER
+    )
+    if not configs:
+        return None, None, None, None
 
     poses_by_serial = {}
-    for key, entry in raw.items():
-        cfg = entry.get("FusionConfiguration", {})
-        sn = int(cfg.get("serial_number", key))
-        pose_vals = np.fromstring(cfg["pose"], sep=" ", dtype=np.float64)
-        if pose_vals.size != 16:
-            raise ValueError(f"Invalid pose matrix for serial {sn} in {latest_path}")
-        poses_by_serial[sn] = pose_vals.reshape(4, 4)
-
-    if not poses_by_serial:
-        return None, None, None
+    override_gravity_by_serial = {}
+    for cfg in configs:
+        sn = int(cfg.serial_number)
+        poses_by_serial[sn] = np.array(cfg.pose.m, dtype=np.float64).reshape(4, 4)
+        override_gravity_by_serial[sn] = bool(cfg.override_gravity)
 
     # Reference camera is the one whose rotation is closest to identity.
     ref_serial = min(
         poses_by_serial,
         key=lambda sn: float(np.linalg.norm(poses_by_serial[sn][:3, :3] - np.eye(3))),
     )
-    return poses_by_serial, ref_serial, os.path.basename(latest_path)
+    return poses_by_serial, override_gravity_by_serial, ref_serial, os.path.basename(latest_path)
 
 
 def resolve_svo_inputs(arg):
@@ -109,7 +130,10 @@ def resolve_svo_inputs(arg):
             return None
         if len(svos) == 1:
             return [(svos[0], arg)]
-        return [(p, os.path.join(arg, os.path.splitext(os.path.basename(p))[0])) for p in svos]
+        return [
+            (p, os.path.join(arg, _svo_stem_to_folder_name(os.path.splitext(os.path.basename(p))[0])))
+            for p in svos
+        ]
 
     if os.path.isfile(arg):
         return [(arg, os.path.dirname(os.path.abspath(arg)))]
@@ -119,10 +143,12 @@ def resolve_svo_inputs(arg):
 
 
 def read_svo_timestamps(svo_path):
-    """Fast pass with DEPTH_MODE.NONE to extract (serial, timestamps_ns) from an .svo2."""
+    """Fast pass with DEPTH_MODE.NONE to extract (serial, timestamps_ns, rot_imu, imu_euler_deg) from an .svo2."""
     init = sl.InitParameters()
     init.set_from_svo_file(svo_path)
     init.depth_mode = sl.DEPTH_MODE.NONE
+    init.coordinate_units = sl.UNIT.METER
+    init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
     init.sdk_verbose = 0
 
     zed = sl.Camera()
@@ -134,6 +160,11 @@ def read_svo_timestamps(svo_path):
 
     serial = int(zed.get_camera_information().serial_number)
     runtime = sl.RuntimeParameters()
+    sensors_data = sl.SensorsData()
+    imu_pose = sl.Transform()
+    rot_imu = np.eye(4, dtype=np.float64)
+    imu_euler_deg = np.zeros(3, dtype=np.float64)
+    imu_sampled = False
     timestamps_ns = []
     try:
         while True:
@@ -142,26 +173,39 @@ def read_svo_timestamps(svo_path):
                 break
             if err == sl.ERROR_CODE.SUCCESS:
                 timestamps_ns.append(zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds())
+                if not imu_sampled and len(timestamps_ns) >= 10:
+                    if zed.get_sensors_data(sensors_data, sl.TIME_REFERENCE.IMAGE) == sl.ERROR_CODE.SUCCESS:
+                        imu_data = sensors_data.get_imu_data()
+                        if imu_data.is_available:
+                            imu_data.get_pose(imu_pose)
+                            rot_imu[:3, :3] = np.array(imu_pose.m, dtype=np.float64).reshape(4, 4)[:3, :3]
+                            imu_euler_deg = np.array(imu_pose.get_euler_angles(radian=False), dtype=np.float64)
+                            imu_sampled = True
             else:
                 timestamps_ns.append(timestamps_ns[-1] if timestamps_ns else 0)
     finally:
         with _suppress_c_output():
             zed.close()
 
-    return serial, np.array(timestamps_ns, dtype=np.int64)
+    return serial, np.array(timestamps_ns, dtype=np.int64), rot_imu, imu_euler_deg
 
 
 def compute_synced_frame_indices(svo_paths, ref_serial=None, max_dt_ns=SYNC_TOLERANCE_NS):
     """Align N .svo2 files by nearest IMAGE timestamp within max_dt_ns.
-    Returns {svo_path: set_of_raw_frame_indices}."""
-    print(f"[Sync] Reading timestamps from {len(svo_paths)} SVO2 files...")
+    Returns ({svo_path: set_of_raw_frame_indices}, {serial: rot_imu_4x4})."""
+    print(f"[Sync] Reading timestamps & IMU gravity pose from {len(svo_paths)} SVO2 files...")
     ts_by_svo = {}
     serial_by_svo = {}
+    rot_imu_by_serial = {}
     for p in svo_paths:
-        sn, ts = read_svo_timestamps(p)
+        sn, ts, rot_imu, euler_deg = read_svo_timestamps(p)
         ts_by_svo[p] = ts
         serial_by_svo[p] = sn
-        print(f"  {os.path.basename(p)} (SN={sn}): {len(ts)} frames")
+        rot_imu_by_serial[sn] = rot_imu
+        print(
+            f"  {os.path.basename(p)} [{camera_label(sn)}]: {len(ts)} frames  "
+            f"| IMU (deg): pitch={euler_deg[0]:+.2f}, yaw={euler_deg[1]:+.2f}, roll={euler_deg[2]:+.2f}"
+        )
 
     ref_svo = next((p for p, sn in serial_by_svo.items() if sn == ref_serial), svo_paths[0])
     ts_ref = ts_by_svo[ref_svo]
@@ -196,14 +240,14 @@ def compute_synced_frame_indices(svo_paths, ref_serial=None, max_dt_ns=SYNC_TOLE
 
     kept_ref = np.where(valid_mask)[0]
     keep_sets = {p: set(matched_idx_by_svo[p][kept_ref].tolist()) for p in svo_paths}
-    print(f"[Sync] Kept {len(kept_ref)}/{len(ts_ref)} synchronized frames (ref SN={serial_by_svo[ref_svo]})")
+    print(f"[Sync] Kept {len(kept_ref)}/{len(ts_ref)} synchronized frames (ref {camera_label(serial_by_svo[ref_svo])})")
     if len(kept_ref) > 0:
         for p in svo_paths:
             if p == ref_svo:
                 continue
             dts_ms = dt_by_svo[p][kept_ref] / 1e6
-            print(f"  SN={serial_by_svo[p]} sync offset: mean={dts_ms.mean():.3f} ms, p95={np.percentile(dts_ms, 95):.3f} ms, max={dts_ms.max():.3f} ms")
-    return keep_sets
+            print(f"  {camera_label(serial_by_svo[p])} sync offset: mean={dts_ms.mean():.3f} ms, p95={np.percentile(dts_ms, 95):.3f} ms, max={dts_ms.max():.3f} ms")
+    return keep_sets, rot_imu_by_serial
 
 
 def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format,
@@ -240,12 +284,14 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
             calibration_available=True,
             zed360_calibration_available=True,
             calibration_file=calib_filename,
+            camera_name=camera_name(serial),
             camera_serial=np.int64(serial),
+            reference_name=camera_name(ref_serial),
             reference_serial=np.int64(ref_serial),
             T_world_from_camera=T_world_from_cam,
             T_ref_from_camera=T_ref_from_cam,
         )
-        print(f"[Calibration] ZED360 ({calib_filename}) matched SN={serial} (ref SN={ref_serial})")
+        print(f"[Calibration] ZED360 ({calib_filename}) matched {camera_label(serial)} (ref {camera_label(ref_serial)})")
     else:
         calibration_path = os.path.join(outdir, "calibration.json")
         try:
@@ -254,6 +300,7 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
             zed.close()
             raise
         frame_metadata = calibration_metadata(calibration)
+        frame_metadata["camera_name"] = camera_name(serial)
         frame_metadata["camera_serial"] = np.int64(serial)
         print("[Calibration] " + ("Loaded; XYZ remains camera-space, world transform saved in metadata" if calibration else "Absent: camera-space baseline"))
 
@@ -285,14 +332,17 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
     u_off = (cols - cx).astype(np.float32)
     v_off = (rows - cy).astype(np.float32)
 
-    n_expected = zed.get_svo_number_of_frames()
+    n_target = len(keep_indices) if keep_indices is not None else zed.get_svo_number_of_frames()
     print(f"[Input]      {svo_path}")
     print(f"[Resolution] {W} x {H}   [Depth range] {depth_min:.2f} - {depth_max:.2f} m")
-    print(f"[Frames]     {n_expected} (expected)")
+    print(f"[Frames]     {n_target}")
 
     runtime = sl.RuntimeParameters()
     runtime.confidence_threshold = 95
     runtime.measure3D_reference_frame = sl.REFERENCE_FRAME.CAMERA
+
+    skip_runtime = sl.RuntimeParameters()
+    skip_runtime.enable_depth = False
 
     pc_path = os.path.join(outdir, "pointcloud.bin")
     pc_f    = open(pc_path, "wb")
@@ -318,13 +368,19 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
 
     try:
         while True:
-            err = zed.grab(runtime)
-            if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
+            if keep_indices is not None and written_idx >= n_target:
                 break
 
             if keep_indices is not None and raw_idx not in keep_indices:
+                err = zed.grab(skip_runtime)
+                if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
+                    break
                 raw_idx += 1
                 continue
+
+            err = zed.grab(runtime)
+            if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
+                break
 
             if err != sl.ERROR_CODE.SUCCESS:
                 print(f"\n[Warning] grab() returned {repr(err)} at frame {raw_idx}, writing blank/NaN frame")
@@ -370,7 +426,7 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
             raw_idx += 1
             written_idx += 1
             if written_idx % 30 == 0:
-                print(f"\r[Processing] {raw_idx}/{n_expected} frames (kept {written_idx})", end='', flush=True)
+                print(f"\r[Processing] {written_idx}/{n_target} frames", end='', flush=True)
 
     finally:
         pc_f.close()
@@ -384,7 +440,7 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
         with _suppress_c_output():
             zed.close()
 
-    print(f"\r[Processing] {raw_idx}/{n_expected} frames (kept {written_idx}) -- done")
+    print(f"\r[Processing] {written_idx}/{n_target} frames -- done")
 
     meta_path = os.path.join(outdir, "pointcloud_meta.npz")
     np.savez_compressed(
@@ -439,17 +495,23 @@ def main():
         print("[Cancelled] No SVO selected.")
         sys.exit(1)
 
-    zed360_calib = load_latest_zed360_calibration()
-    ref_serial = zed360_calib[1]
+    poses_by_serial, override_gravity_by_serial, ref_serial, calib_filename = load_latest_zed360_calibration()
 
     if len(inputs) > 1:
-        keep_sets = compute_synced_frame_indices([p for p, _ in inputs], ref_serial=ref_serial)
+        keep_sets, rot_imu_by_serial = compute_synced_frame_indices([p for p, _ in inputs], ref_serial=ref_serial)
+        if poses_by_serial is not None:
+            for sn, rot_imu in rot_imu_by_serial.items():
+                if sn in poses_by_serial and not override_gravity_by_serial.get(sn, False):
+                    # Per sl/Fusion.hpp: when override_gravity == false, Pose_abs = Pose_rel * Rot_IMU_camera
+                    poses_by_serial[sn] = poses_by_serial[sn] @ rot_imu
     else:
         keep_sets = {inputs[0][0]: None}
 
+    zed360_calib = (poses_by_serial, ref_serial, calib_filename) if poses_by_serial is not None else None
+
     for idx, (svo_path, outdir) in enumerate(inputs, 1):
         if len(inputs) > 1:
-            print(f"\n=== Camera {idx}/{len(inputs)}: {os.path.basename(svo_path)} ===")
+            print(f"\n=== Camera {idx}/{len(inputs)}: {os.path.basename(outdir)} ({os.path.basename(svo_path)}) ===")
         process_svo(
             svo_path, outdir, args.depth_min, args.depth_max,
             enable_pose=args.pose, body_format=args.body_format,
