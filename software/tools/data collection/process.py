@@ -255,7 +255,7 @@ def process_svo(svo_path, outdir, depth_min, depth_max, enable_pose, body_format
     os.makedirs(outdir, exist_ok=True)
     init = sl.InitParameters()
     init.set_from_svo_file(svo_path)
-    init.depth_mode             = sl.DEPTH_MODE.NEURAL
+    init.depth_mode             = sl.DEPTH_MODE.NEURAL_PLUS
     init.coordinate_units       = sl.UNIT.METER
     init.coordinate_system      = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
     init.depth_minimum_distance = depth_min
